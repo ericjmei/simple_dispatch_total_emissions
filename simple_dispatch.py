@@ -56,6 +56,7 @@ import pandas
 import matplotlib.pylab
 import scipy
 import scipy.interpolate
+import numpy
 import datetime
 import math
 import copy
@@ -83,16 +84,40 @@ class generatorData(object):
         cems_validation_run : if True, then we are trying to validate the output against CEMS data and will only look at power plants included in the CEMS data
         """
         #read in the data. This is a bit slow right now because it reads in more data than needed, but it is simple and straightforward
+        # edited to parquet files upon first read - this makes the entire process much faster on subsequent runs
         self.nerc = nerc
         egrid_year_str = str(math.floor((year / 2.0)) * 2)[2:4] #eGrid is only every other year so we have to use eGrid 2016 to help with a 2017 run, for example
         if year < 2014: # NOTE: can probably remove this requirement. eGRID does have CEMS data, and we will only be using those anyway
             egrid_year_str = str(14) #egrid data before 2014 does not have unit level data, so use 2014. We risk missing a few generators that retired between 'year' and 2014.
         print('Reading in unit level data from eGRID...')
-        self.egrid_unt = pandas.read_excel(egrid_fname, 'UNT'+egrid_year_str, skiprows=[0]) 
+        try:
+            self.egrid_unt = pandas.read_parquet(egrid_fname.split('.')[0]+'_UNT.parquet')
+        except:
+            self.egrid_unt = pandas.read_excel(egrid_fname, 'UNT'+egrid_year_str, skiprows=[0]) 
+            self.egrid_unt.to_parquet(egrid_fname.split('.')[0]+'_UNT.parquet', index=False)
         print('Reading in generator level data from eGRID...')
-        self.egrid_gen = pandas.read_excel(egrid_fname, 'GEN'+egrid_year_str, skiprows=[0])
+        try:
+            self.egrid_gen = pandas.read_parquet(egrid_fname.split('.')[0]+'_GEN.parquet')
+        except:
+            self.egrid_gen = pandas.read_excel(egrid_fname, 'GEN'+egrid_year_str, skiprows=[0])
+            self.egrid_gen.to_parquet(egrid_fname.split('.')[0]+'_GEN.parquet', index=False)
         print('Reading in plant level data from eGRID...')
-        self.egrid_plnt = pandas.read_excel(egrid_fname, 'PLNT'+egrid_year_str, skiprows=[0])
+        try:
+            self.egrid_plnt = pandas.read_parquet(egrid_fname.split('.')[0]+'_PLNT.parquet')
+        except:
+            self.egrid_plnt = pandas.read_excel(egrid_fname, 'PLNT'+egrid_year_str, skiprows=[0])
+            self.egrid_plnt.to_parquet(egrid_fname.split('.')[0]+'_PLNT.parquet', index=False)
+        
+        ### TEMP MOVE UP FOR DEBUGGING. MOVE BACK WHEN DONE
+        # other data
+        self.cems_folder = cems_folder # we only want data from CEMS anyway
+        self.easiur_per_plant = pandas.read_csv(easiur_fname) 
+        self.fuel_commodity_prices = pandas.read_excel(fuel_commodity_prices_excel_dir, str(year)) # needs custom updating
+        self.cems_validation_run = cems_validation_run # I feel like we can always set to true because we're only evaluating CEMS anyway
+        self.hist_downtime = hist_downtime
+        self.coal_min_downtime = coal_min_downtime
+        self.year = year
+        self.cleanGeneratorData()
         
         print('Reading in data from EIA Form 923...')
         eia923 = pandas.read_excel(eia923_fname, 'Page 5 Fuel Receipts and Costs', skiprows=[0,1,2,3]) 
@@ -102,9 +127,21 @@ class generatorData(object):
         eia923_1 = eia923_1.rename(columns={'Plant Id': 'orispl'})
         self.eia923_1 = eia923_1
         
+        
         print('Reading in data from FERC Form 714...')
-        self.ferc714 = pandas.read_csv(ferc714_fname) 
-        self.ferc714_ids = pandas.read_csv(ferc714IDs_fname) 
+        try:
+            self.ferc714 = pandas.read_parquet(ferc714_fname.split('.')[0]+'.parquet')
+        except:
+            self.ferc714 = pandas.read_csv(ferc714_fname) 
+            self.ferc714.to_parquet(ferc714_fname.split('.')[0]+'.parquet', index=False)
+        
+        try:
+            self.ferc714_ids = pandas.read_parquet(ferc714IDs_fname.split('.')[0]+'.parquet')
+        except:
+            self.ferc714_ids = pandas.read_csv(ferc714IDs_fname) 
+            self.ferc714_ids.to_parquet(ferc714IDs_fname.split('.')[0]+'.parquet', index=False)
+
+        # other data
         self.cems_folder = cems_folder # we only want data from CEMS anyway
         self.easiur_per_plant = pandas.read_csv(easiur_fname) 
         self.fuel_commodity_prices = pandas.read_excel(fuel_commodity_prices_excel_dir, str(year)) # needs custom updating
@@ -114,7 +151,7 @@ class generatorData(object):
         self.year = year
         
         ## data cleaning
-        self.cleanGeneratorData()
+        #self.cleanGeneratorData()
         self.addGenVom()
         self.calcFuelPrices()
         if include_easiur_damages:
@@ -170,23 +207,23 @@ class generatorData(object):
         df_plnt.columns = ['orispl', 'state', 'ba', 'nerc', 'egrid']
        
         ## merge these egrid data together at the unit-level
-        #df = df.merge(df_gen, left_index=True, how='left', on='orispl_unit')  # NOTE: not sure what this is supposed to achieve, df has all columns that df_gen does
-        df = df.merge(df_plnt, left_index=True, how='left', on='orispl')  
-        df = df.merge(df_plnt_fuel, left_index=True, how='left', on='fuel')  
+        df = df.merge(df_gen, how='left', on='orispl_unit')  
+        df = df.merge(df_plnt, how='left', on='orispl')  
+        df = df.merge(df_plnt_fuel, how='left', on='fuel')  
         # keep only the units in the nerc region we're analyzing
         df = df[df.nerc == self.nerc]
         
-        ## calculate the emissions rates
-        df['co2'] = scipy.divide(df.co2_ann,df.mwh_ann) * 907.185 #tons to kg
-        df['so2'] = scipy.divide(df.so2_ann,df.mwh_ann) * 907.185 #tons to kg
-        df['nox'] = scipy.divide(df.nox_ann,df.mwh_ann) * 907.185 #tons to kg
+        ## calculate the emissions rates # NOTE: double check that eGRID units in tons
+        df['co2'] = numpy.divide(df.co2_ann,df.mwh_ann) * 907.185 #tons to kg # replaced scipy with numpy divide
+        df['so2'] = numpy.divide(df.so2_ann,df.mwh_ann) * 907.185 #tons to kg
+        df['nox'] = numpy.divide(df.nox_ann,df.mwh_ann) * 907.185 #tons to kg
         
         ## analyze empty years
-        #for empty year online, look at orispl in egrid_gen instead of orispl_unit 
-        df.loc[df.year_online.isna(), 'year_online'] = (df[df.year_online.isna()][['orispl', 'prime_mover', 'fuel']]
+        #for empty year online, look at orispl in egrid_gen instead of egrid_unit 
+        df.loc[df.year_online.isna(), 'year_online'] = (df[df.year_online.isna()][['orispl', 'prime_mover', 'fuel']] # retrieve nan year online
                                                         .merge(df_gen_long[['orispl', 'prime_mover', 'fuel', 'year_online']]
                                                                .groupby(['orispl', 'prime_mover', 'fuel'], as_index=False)
-                                                               .agg('mean'), on=['orispl', 'prime_mover', 'fuel'])['year_online'])
+                                                               .agg('mean'), on=['orispl', 'prime_mover', 'fuel'])['year_online']) # average year online for egrid_gen
         #for any remaining empty year onlines, assume self.year (i.e. that they are brand new)
         df.loc[df.year_online.isna(), 'year_online'] = scipy.zeros_like(df.loc[df.year_online.isna(), 'year_online']) + self.year
         
@@ -238,9 +275,9 @@ class generatorData(object):
         #create the 'orispl_unit' column, which combines orispl and unit into a unique tag for each generation unit
         df_cems['orispl_unit'] = df_cems['orispl'].map(str) + '_' + df_cems['unit'].map(str)
         #bring in geography data and only keep generators within self.nerc
-        df_cems = df_cems.merge(df_plnt, left_index=True, how='left', on='orispl')  
+        df_cems = df_cems.merge(df_plnt, how='left', on='orispl') # data such as egrid subregion and balancing authority
         df_cems = df_cems[df_cems['nerc']==self.nerc] 
-        #convert emissions to kg
+        #convert emissions to kg; NOTE: double check units!
         df_cems.co2_tot = df_cems.co2_tot * 907.185 #tons to kg
         df_cems.so2_tot = df_cems.so2_tot * 0.454 #lbs to kg
         df_cems.nox_tot = df_cems.nox_tot * 0.454 #lbs to kg
@@ -252,7 +289,7 @@ class generatorData(object):
         df_cems['nox'] = df_cems.nox_tot / df_cems.mwh
         df_cems.replace([scipy.inf, -scipy.inf], scipy.nan, inplace=True) #don't want inf messing up median calculations
         #drop any bogus data. For example, the smallest mmbtu we would expect to see is 25MW(smallest unit) * 0.4(smallest minimum output) * 6.0 (smallest heat rate) = 60 mmbtu. Any entries with less than 60 mmbtu fuel or less than 6.0 heat rate, let's get rid of that row of data.
-        df_cems = df_cems[(df_cems.heat_rate >= 6.0) & (df_cems.mmbtu >= 60)]
+        df_cems = df_cems[(df_cems.heat_rate >= 6.0) & (df_cems.mmbtu >= 60)] # NOTE: double check assumption above
         
         ##calculate emissions rates and heat rate for each week and each generator
         #rather than parsing the dates (which takes forever because this is such a big dataframe) we can create month and day columns for slicing the data based on time of year
@@ -266,7 +303,7 @@ class generatorData(object):
         #loop through the weeks, slice the data, and find the average heat rates and emissions rates
         ## first, add a column 't' that says which week of the simulation we are in
         df_orispl_unit['t'] = 52
-        for t in scipy.arange(52)+1: # add column to relevant rows
+        for t in numpy.arange(52)+1: # add column to relevant rows
             start = (datetime.datetime.strptime(str(self.year) + '-01-01', '%Y-%m-%d') + datetime.timedelta(days=7.05*(t-1)-1)).strftime('%Y-%m-%d') 
             end = (datetime.datetime.strptime(str(self.year) + '-01-01', '%Y-%m-%d') + datetime.timedelta(days=7.05*(t)-1)).strftime('%Y-%m-%d') 
             start_monthday = float(start[0:4])*10000 + float(start[5:7])*100 + float(start[8:])
@@ -277,11 +314,15 @@ class generatorData(object):
         ## process data
         #remove outlier emissions and heat rates. These happen at hours where a generator's output is very low (e.g. less than 10 MWh). To remove these, we will remove any datapoints where mwh < 10.0 and heat_rate < 30.0 (0.5% percentiles of the 2014 TRE data).
         # NOTE maybe should put print statement here for debugging purposes
+        percRemoved = ((df_orispl_unit.shape[0] - sum((df_orispl_unit.mwh >= 10.0) & (df_orispl_unit.heat_rate <= 30.0)))
+                       *100/df_orispl_unit.shape[0]) # percent of data that are outliers and will be removed
+        print(str(percRemoved)+"% data removed from "+self.nerc+" because <10 Mwh or <30 mmbtu")
         df_orispl_unit = df_orispl_unit[(df_orispl_unit.mwh >= 10.0) & (df_orispl_unit.heat_rate <= 30.0)]
         #aggregate by orispl_unit and t to get the heat rate, emissions rates, and capacity for each unit at each t
+        # NOTE need to add numeric_only spec, make sure same output
         temp_2 = df_orispl_unit.groupby(['orispl_unit', 't'], as_index=False).agg('median')[['orispl_unit', 't', 'heat_rate', 'co2', 'so2', 'nox']].copy(deep=True)
         temp_2['mw'] = df_orispl_unit.groupby(['orispl_unit', 't'], as_index=False).agg('max')['mwh'].copy(deep=True) # capacity is max mwh of week
-        #condense df_orispl_unit down to where we just have 1 row for each unique orispl_unit; NOTE: why? doesn't this give max ever?
+        #condense df_orispl_unit down to where we just have 1 row for each unique orispl_unit; NOTE: 
         df_orispl_unit = df_orispl_unit.groupby('orispl_unit', as_index=False).agg('max')[['orispl_unit', 'orispl', 'state', 'ba', 'nerc', 'egrid', 'mwh']]
         df_orispl_unit.rename(columns={'mwh':'mw'}, inplace=True)
         
@@ -659,9 +700,9 @@ class generatorData(object):
         df = self.df_cems.copy(deep=True)
         merge_orispl_unit = self.df.copy(deep=True)[['orispl_unit', 'fuel', 'fuel_type']]
         merge_orispl = self.df.copy(deep=True)[['orispl', 'fuel', 'fuel_type']].drop_duplicates('orispl')
-        df = df.merge(merge_orispl_unit, left_index=True, how='left', on=['orispl_unit']) 
-        df.loc[df.fuel.isna(), 'fuel'] = scipy.array(df[df.fuel.isna()].merge(merge_orispl, left_index=True, how='left', on=['orispl']).fuel_y)
-        df.loc[df.fuel_type.isna(), 'fuel_type'] = scipy.array(df[df.fuel_type.isna()].merge(merge_orispl, left_index=True, how='left', on=['orispl']).fuel_type_y)
+        df = df.merge(merge_orispl_unit, how='left', on=['orispl_unit']) 
+        df.loc[df.fuel.isna(), 'fuel'] = scipy.array(df[df.fuel.isna()].merge(merge_orispl, how='left', on=['orispl']).fuel_y)
+        df.loc[df.fuel_type.isna(), 'fuel_type'] = scipy.array(df[df.fuel_type.isna()].merge(merge_orispl, how='left', on=['orispl']).fuel_type_y)
         #build the hist_dispatch dataframe
         #start with the datetime column
         start_date_str = (self.df_cems.date.min()[-4:] + '-' + self.df_cems.date.min()[:5] + ' 00:00')
