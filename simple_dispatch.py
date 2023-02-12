@@ -59,6 +59,7 @@ import scipy.interpolate
 import datetime
 import math
 import copy
+import os
 from bisect import bisect_left
 
 
@@ -92,6 +93,7 @@ class generatorData(object):
         self.egrid_gen = pandas.read_excel(egrid_fname, 'GEN'+egrid_year_str, skiprows=[0])
         print('Reading in plant level data from eGRID...')
         self.egrid_plnt = pandas.read_excel(egrid_fname, 'PLNT'+egrid_year_str, skiprows=[0])
+        
         print('Reading in data from EIA Form 923...')
         eia923 = pandas.read_excel(eia923_fname, 'Page 5 Fuel Receipts and Costs', skiprows=[0,1,2,3]) 
         eia923 = eia923.rename(columns={'Plant Id': 'orispl'})
@@ -99,16 +101,19 @@ class generatorData(object):
         eia923_1 = pandas.read_excel(eia923_fname, 'Page 1 Generation and Fuel Data', skiprows=[0,1,2,3,4]) 
         eia923_1 = eia923_1.rename(columns={'Plant Id': 'orispl'})
         self.eia923_1 = eia923_1
+        
         print('Reading in data from FERC Form 714...')
-        self.ferc714 = pandas.read_csv(ferc714_fname)
-        self.ferc714_ids = pandas.read_csv(ferc714IDs_fname)
-        self.cems_folder = cems_folder
-        self.easiur_per_plant = pandas.read_csv(easiur_fname)
-        self.fuel_commodity_prices = pandas.read_excel(fuel_commodity_prices_excel_dir, str(year))
-        self.cems_validation_run = cems_validation_run
+        self.ferc714 = pandas.read_csv(ferc714_fname) # can't find this file, but I think I can create a formatter for this
+        self.ferc714_ids = pandas.read_csv(ferc714IDs_fname) # respondent IDs, not exactly sure what this is used for
+        self.cems_folder = cems_folder # we only want data from CEMS anyway
+        self.easiur_per_plant = pandas.read_csv(easiur_fname) # egrid supposedly, but cannot find the source of this file; potentially can remove (?)
+        self.fuel_commodity_prices = pandas.read_excel(fuel_commodity_prices_excel_dir, str(year)) # needs custom updating
+        self.cems_validation_run = cems_validation_run # I feel like we can always set to true because we're only evaluating CEMS anyway
         self.hist_downtime = hist_downtime
         self.coal_min_downtime = coal_min_downtime
         self.year = year
+        
+        ## data cleaning
         self.cleanGeneratorData()
         self.addGenVom()
         self.calcFuelPrices()
@@ -132,45 +137,57 @@ class generatorData(object):
         """
         #copy in the egrid data and merge it together. In the next few lines we use the eGRID excel file to bring in unit level data for fuel consumption and emissions, generator level data for capacity and generation, and plant level data for fuel type and grid region. Then we compile it together to get an initial selection of data that defines each generator.
         print('Cleaning eGRID Data...')
-        #unit-level data
+        
+        ##unit-level data: prime mover type, fuel type, heat input, NOx, SO2, CO2, and hours online
         df = self.egrid_unt.copy(deep=True)
         #rename columns
+        # NOTE: 2005, UNITID = BLRID, no PRMVR, FUELU1 = FUELB1, HTIAN = [HTIEAN, HTIFAN]?, NOXAN = [NOXEAN NOXFAN]?, SO2AN = [SO2EAN,SO2FAN]?, CO2 = [CO2EAN,CO2FAN]?, HRSOP = LOADHRS
         df = df[['PNAME', 'ORISPL', 'UNITID', 'PRMVR', 'FUELU1', 'HTIAN', 'NOXAN', 'SO2AN', 'CO2AN', 'HRSOP']]
         df.columns = ['gen', 'orispl', 'unit', 'prime_mover', 'fuel', 'mmbtu_ann', 'nox_ann', 'so2_ann', 'co2_ann', 'hours_on']
         df['orispl_unit'] = df.orispl.map(str) + '_' + df.unit.map(str) #orispl_unit is a unique tag for each generator unit
         #drop nan fuel
         df = df[~df.fuel.isna()]
-        #gen-level data: contains MW capacity and MWh annual generation data
+        
+        ##gen-level data: contains MW capacity and MWh annual generation data, generator fuel, generator online year
         df_gen = self.egrid_gen.copy(deep=True) 
         df_gen['orispl_unit'] = df_gen['ORISPL'].map(str) + '_' + df_gen['GENID'].map(str) #orispl_unit is a unique tag for each generator unit
+        # create two different dataframes for generator: one short and one long
         df_gen_long = df_gen[['ORISPL', 'NAMEPCAP', 'GENNTAN', 'GENYRONL', 'orispl_unit', 'PRMVR', 'FUELG1']].copy()
         df_gen_long.columns = ['orispl', 'mw', 'mwh_ann', 'year_online', 'orispl_unit', 'prime_mover', 'fuel']
         df_gen = df_gen[['NAMEPCAP', 'GENNTAN', 'GENYRONL', 'orispl_unit']]
         df_gen.columns = ['mw', 'mwh_ann', 'year_online', 'orispl_unit']
-        #plant-level data: contains fuel, fuel_type, balancing authority, nerc region, and egrid subregion data
+        
+        ##plant-level data: contains fuel, fuel_type, balancing authority, nerc region, and egrid subregion data
         df_plnt = self.egrid_plnt.copy(deep=True) 
-        #fuel
-        df_plnt_fuel = df_plnt[['PLPRMFL', 'PLFUELCT']]
+        # grab unique fuel types
+        df_plnt_fuel = df_plnt[['PLPRMFL', 'PLFUELCT']] # plant primary fuel and plant primary fuel category
         df_plnt_fuel = df_plnt_fuel.drop_duplicates('PLPRMFL')
         df_plnt_fuel.PLFUELCT = df_plnt_fuel.PLFUELCT.str.lower()
         df_plnt_fuel.columns = ['fuel', 'fuel_type']
-        #geography
-        df_plnt = df_plnt[['ORISPL', 'BACODE', 'NERC', 'SUBRGN']]
-        df_plnt.columns = ['orispl', 'ba', 'nerc', 'egrid']
-        #merge these egrid data together at the unit-level
+        # grab all geography
+        # NOTE: 2005, no BACODE (balancing authority code)
+        df_plnt = df_plnt[['ORISPL', 'PSTATABB', 'BACODE', 'NERC', 'SUBRGN']]
+        df_plnt.columns = ['orispl', 'state', 'ba', 'nerc', 'egrid']
+       
+        ## merge these egrid data together at the unit-level
         df = df.merge(df_gen, left_index=True, how='left', on='orispl_unit')  
         df = df.merge(df_plnt, left_index=True, how='left', on='orispl')  
         df = df.merge(df_plnt_fuel, left_index=True, how='left', on='fuel')  
-        #keep only the units in the nerc region we're analyzing
+        # keep only the units in the nerc region we're analyzing
         df = df[df.nerc == self.nerc]
-        #calculate the emissions rates
+        
+        ## calculate the emissions rates
         df['co2'] = scipy.divide(df.co2_ann,df.mwh_ann) * 907.185 #tons to kg
         df['so2'] = scipy.divide(df.so2_ann,df.mwh_ann) * 907.185 #tons to kg
         df['nox'] = scipy.divide(df.nox_ann,df.mwh_ann) * 907.185 #tons to kg
-        #for empty years, look at orispl in egrid_gen instead of orispl_unit 
+        
+        ## analyze empty years
+        #for empty year online, look at orispl in egrid_gen instead of orispl_unit 
         df.loc[df.year_online.isna(), 'year_online'] = df[df.year_online.isna()][['orispl', 'prime_mover', 'fuel']].merge(df_gen_long[['orispl', 'prime_mover', 'fuel', 'year_online']].groupby(['orispl', 'prime_mover', 'fuel'], as_index=False).agg('mean'), on=['orispl', 'prime_mover', 'fuel'])['year_online']
-        #for any remaining empty years, assume self.year (i.e. that they are brand new)
+        #for any remaining empty year onlines, assume self.year (i.e. that they are brand new)
         df.loc[df.year_online.isna(), 'year_online'] = scipy.zeros_like(df.loc[df.year_online.isna(), 'year_online']) + self.year
+        
+        
         ###
         #now sort through and compile CEMS data. The goal is to use CEMS data to characterize each generator unit. So if CEMS has enough information to describe a generator unit we will over-write the eGRID data. If not, we will use the eGRID data instead. (CEMS data is expected to be more accurate because it has actual hourly performance of the generator units that we can use to calculate their operational characteristics. eGRID is reported on an annual basis and might be averaged out in different ways than we would prefer.)
         print('Compiling CEMS data...')
@@ -183,15 +200,32 @@ class generatorData(object):
                   'SERC' : ['mo','ar','tx','la','ms','tn','ky','il','va','al','fl','ga','sc','nc'],
                   'MRO': ['ia','il','mi','mn','mo','mt','nd','ne','sd','wi','wy'], 
                   'TRE': ['ok','tx']}
-        #compile the different months of CEMS files into one dataframe, df_cems. (CEMS data is downloaded by state and by month, so compiling a year of data for ERCOT / TRE, for example, requires reading in 12 Texas .csv files and 12 Oklahoma .csv files)   
+        #compile the different months of CEMS files into one dataframe, df_cems. 
         df_cems = pandas.DataFrame()
         for s in states[self.nerc]:
-            for m in ['01','02','03','04','05','06','07','08','09','10','11', '12']:
-                print(s + ': ' + m)
-                df_cems_add = pandas.read_csv(self.cems_folder + '/%s/%s%s%s.csv'%(str(self.year),str(self.year),s,m))
-                df_cems_add = df_cems_add[['ORISPL_CODE', 'UNITID', 'OP_DATE','OP_HOUR','GLOAD (MW)', 'SO2_MASS (lbs)', 'NOX_MASS (lbs)', 'CO2_MASS (tons)', 'HEAT_INPUT (mmBtu)']].dropna()
-                df_cems_add.columns=['orispl', 'unit', 'date','hour','mwh', 'so2_tot', 'nox_tot', 'co2_tot', 'mmbtu']
-                df_cems = pandas.concat([df_cems, df_cems_add])
+            state = s.upper() # for data reading purposes
+            print("processing CEMS data from " + state + " for " + str(self.year))
+            
+            # obtain hourly CEMS data for state and year
+            os.chdir(self.cems_folder+"/"+state) # NEED TO EDIT THIS
+            df_cems_add = pandas.read_parquet('CEMS_hourly_'+state+'_'+str(self.year)+'.parquet')
+            
+            # split date time columns
+            to_split = df_cems_add["operating_datetime_utc"] # datetime IN UTC - check that simple dispatch operates this way?
+            to_split = to_split.tolist()
+            date = [x.strftime("%m/%d/%y") for x in to_split] # retrieve mm/dd/yy date string
+            hour = [int(x.strftime("%H")) for x in to_split] # retrieve hour string
+            timeData_toAdd = pandas.DataFrame({'date': date,
+                                           'hour': hour}) # create new parallel dataframe with date and hour
+            df_cems_add = pandas.concat([df_cems_add, timeData_toAdd], axis=1) # concat to dataframe
+
+            # grab necessary data and rename
+            # because data was pre-cleaned by PUDL, made choice to use EIA id - should test with EPA id as well
+            df_cems_add = df_cems_add[['plant_id_eia', 'emissions_unit_id_epa', 'date','hour', 'gross_load_mw', 
+                                       'so2_mass_lbs', 'nox_mass_lbs', 'co2_mass_tons', 'heat_content_mmbtu']].dropna()
+            df_cems_add.columns=['orispl', 'unit', 'date','hour','mwh', 'so2_tot', 'nox_tot', 'co2_tot', 'mmbtu']
+            df_cems = pandas.concat([df_cems, df_cems_add])
+            
         #create the 'orispl_unit' column, which combines orispl and unit into a unique tag for each generation unit
         df_cems['orispl_unit'] = df_cems['orispl'].map(str) + '_' + df_cems['unit'].map(str)
         #bring in geography data and only keep generators within self.nerc
@@ -201,7 +235,8 @@ class generatorData(object):
         df_cems.co2_tot = df_cems.co2_tot * 907.185 #tons to kg
         df_cems.so2_tot = df_cems.so2_tot * 0.454 #lbs to kg
         df_cems.nox_tot = df_cems.nox_tot * 0.454 #lbs to kg
-        #calculate the hourly heat and emissions rates. Later we will take the medians over each week to define the generators weekly heat and emissions rates.
+        
+        ## calculate the hourly heat and emissions rates. Later we will take the medians over each week to define the generators weekly heat and emissions rates.
         df_cems['heat_rate'] = df_cems.mmbtu / df_cems.mwh
         df_cems['co2'] = df_cems.co2_tot / df_cems.mwh
         df_cems['so2'] = df_cems.so2_tot / df_cems.mwh
@@ -209,35 +244,43 @@ class generatorData(object):
         df_cems.replace([scipy.inf, -scipy.inf], scipy.nan, inplace=True) #don't want inf messing up median calculations
         #drop any bogus data. For example, the smallest mmbtu we would expect to see is 25MW(smallest unit) * 0.4(smallest minimum output) * 6.0 (smallest heat rate) = 60 mmbtu. Any entries with less than 60 mmbtu fuel or less than 6.0 heat rate, let's get rid of that row of data.
         df_cems = df_cems[(df_cems.heat_rate >= 6.0) & (df_cems.mmbtu >= 60)]
-        #calculate emissions rates and heat rate for each week and each generator
+        
+        ##calculate emissions rates and heat rate for each week and each generator
         #rather than parsing the dates (which takes forever because this is such a big dataframe) we can create month and day columns for slicing the data based on time of year
         df_orispl_unit = df_cems.copy(deep=True)
         df_orispl_unit.date = df_orispl_unit.date.str.replace('/','-')
         temp = pandas.DataFrame(df_orispl_unit.date.str.split('-').tolist(), columns=['month', 'day', 'year'], index=df_orispl_unit.index).astype(float)
         df_orispl_unit['monthday'] = temp.year*10000 + temp.month*100 + temp.day
+        
+        
         ###
         #loop through the weeks, slice the data, and find the average heat rates and emissions rates
-        #first, add a column 't' that says which week of the simulation we are in
+        ## first, add a column 't' that says which week of the simulation we are in
         df_orispl_unit['t'] = 52
-        for t in scipy.arange(52)+1:
+        for t in scipy.arange(52)+1: # add column to relevant rows
             start = (datetime.datetime.strptime(str(self.year) + '-01-01', '%Y-%m-%d') + datetime.timedelta(days=7.05*(t-1)-1)).strftime('%Y-%m-%d') 
             end = (datetime.datetime.strptime(str(self.year) + '-01-01', '%Y-%m-%d') + datetime.timedelta(days=7.05*(t)-1)).strftime('%Y-%m-%d') 
             start_monthday = float(start[0:4])*10000 + float(start[5:7])*100 + float(start[8:])
             end_monthday = float(end[0:4])*10000 + float(end[5:7])*100 + float(end[8:])
             #slice the data for the days corresponding to the time series period, t
             df_orispl_unit.loc[(df_orispl_unit.monthday >= start_monthday) & (df_orispl_unit.monthday < end_monthday), 't'] = t          
+        
+        ## process data
         #remove outlier emissions and heat rates. These happen at hours where a generator's output is very low (e.g. less than 10 MWh). To remove these, we will remove any datapoints where mwh < 10.0 and heat_rate < 30.0 (0.5% percentiles of the 2014 TRE data).
-        df_orispl_unit = df_orispl_unit[(df_orispl_unit.mwh >= 10.0) & (df_orispl_unit.heat_rate <= 30.0)]    
+        # NOTE maybe should put print statement here for debugging purposes
+        df_orispl_unit = df_orispl_unit[(df_orispl_unit.mwh >= 10.0) & (df_orispl_unit.heat_rate <= 30.0)]
         #aggregate by orispl_unit and t to get the heat rate, emissions rates, and capacity for each unit at each t
         temp_2 = df_orispl_unit.groupby(['orispl_unit', 't'], as_index=False).agg('median')[['orispl_unit', 't', 'heat_rate', 'co2', 'so2', 'nox']].copy(deep=True)
-        temp_2['mw'] = df_orispl_unit.groupby(['orispl_unit', 't'], as_index=False).agg('max')['mwh'].copy(deep=True)
-        #condense df_orispl_unit down to where we just have 1 row for each unique orispl_unit
-        df_orispl_unit = df_orispl_unit.groupby('orispl_unit', as_index=False).agg('max')[['orispl_unit', 'orispl', 'ba', 'nerc', 'egrid', 'mwh']]
+        temp_2['mw'] = df_orispl_unit.groupby(['orispl_unit', 't'], as_index=False).agg('max')['mwh'].copy(deep=True) # capacity is max mwh of week
+        #condense df_orispl_unit down to where we just have 1 row for each unique orispl_unit; NOTE: why? doesn't this give max ever?
+        df_orispl_unit = df_orispl_unit.groupby('orispl_unit', as_index=False).agg('max')[['orispl_unit', 'orispl', 'state', 'ba', 'nerc', 'egrid', 'mwh']]
         df_orispl_unit.rename(columns={'mwh':'mw'}, inplace=True)
-        for c in ['heat_rate', 'co2', 'so2', 'nox', 'mw']:
-            temp_3 = temp_2.set_index(['orispl_unit', 't'])[c].unstack().reset_index()
+        
+        for c in ['heat_rate', 'co2', 'so2', 'nox', 'mw']: # loop through each variable
+            # sets index to ORISPL_unit and t (week number), then lists variable in its own column with its value in the same row
+            temp_3 = temp_2.set_index(['orispl_unit', 't'])[c].unstack().reset_index() # index is both orispl_unit and t, and unstacks variable by week in columns
             temp_3.columns = list(['orispl_unit']) + ([c + str(a) for a in scipy.arange(52)+1])
-            if not self.hist_downtime:
+            if not self.hist_downtime: ## only if we want to use max annual MW for capacity
                 #remove any outlier values in the 1st or 99th percentiles
                 max_array = temp_3.copy().drop(columns='orispl_unit').quantile(0.99, axis=1) 
                 min_array = temp_3.copy().drop(columns='orispl_unit').quantile(0.01, axis=1)
@@ -252,6 +295,7 @@ class generatorData(object):
                         test[0] = median_array[i]
                     test.insert(0, temp_3.iloc[i].orispl_unit)
                     temp_3.iloc[i] = test
+                    
             #for any nan values (assuming these are offline generators without any output data), fill nans with a large heat_rate that will move the generator towards the end of the merit order and large-ish emissions rate, so if the generator is dispatched in the model it will jack up prices but emissions won't be heavily affected (note, previously I just replaced all nans with 99999, but I was concerned that this might lead to a few hours of the year with extremely high emissions numbers that threw off the data)
             M = float(scipy.where(c=='heat_rate', 50.0, scipy.where(c=='co2', 1500.0, scipy.where(c=='so2', 4.0, scipy.where(c=='nox', 3.0, scipy.where(c=='mw', 0.0, 99.0)))))) #M here defines the heat rate and emissions data we will give to generators that were not online in the historical data
             #if we are using hist_downtime, then replace scipy.NaN with M. That way offline generators can still be dispatched, but they will have high cost and high emissions.
@@ -263,22 +307,28 @@ class generatorData(object):
                 temp_3.iloc[0] = temp_3.iloc[0].fillna(method='ffill') #for some reason the first row was not doing fillna(ffill)
             #merge temp_3 with df_orispl_unit. Now we have weekly heat rates, emissions rates, and capacities for each generator. These values depend on whether we are including hist_downtime
             df_orispl_unit = df_orispl_unit.merge(temp_3, on='orispl_unit', how='left')
+        
         #merge df_orispl_unit into df. Now we have a dataframe with weekly heat rate and emissions rates for any plants in CEMS with that data. There will be some nan values in df for those weekly columns (e.g. 'heat_rate1', 'co223', etc. that we will want to fill with annual averages from eGrid for now
         orispl_units_egrid = df.orispl_unit.unique()
         orispl_units_cems = df_orispl_unit.orispl_unit.unique()
         df_leftovers = df[df.orispl_unit.isin(scipy.setdiff1d(orispl_units_egrid, orispl_units_cems))]
+        
         #if we're doing a cems validation run, we only want to include generators that are in the CEMS data
         if self.cems_validation_run:
             df_leftovers = df_leftovers[df_leftovers.orispl_unit.isin(orispl_units_cems)]
+        
         #remove any outliers - fuel is solar, wind, waste-heat, purchased steam, or other, less than 25MW capacity, less than 88 operating hours (1% CF), mw = nan, mmbtu = nan
         df_leftovers = df_leftovers[(df_leftovers.fuel!='SUN') & (df_leftovers.fuel!='WND') & (df_leftovers.fuel!='WH') & (df_leftovers.fuel!='OTH') & (df_leftovers.fuel!='PUR') & (df_leftovers.mw >=25) & (df_leftovers.hours_on >=88) & (~df_leftovers.mw.isna()) & (~df_leftovers.mmbtu_ann.isna())]
+        
         #remove any outliers that have 0 emissions (except for nuclear)
         df_leftovers = df_leftovers[~((df_leftovers.fuel!='NUC') & (df_leftovers.nox_ann.isna()))]
         df_leftovers['cf'] = df_leftovers.mwh_ann / (df_leftovers.mw *8760.)
+        
         #drop anything with capacity factor less than 1%
         df_leftovers = df_leftovers[df_leftovers.cf >= 0.01]
         df_leftovers.fillna(0.0, inplace=True)
         df_leftovers['heat_rate'] = df_leftovers.mmbtu_ann / df_leftovers.mwh_ann
+        
         #add in the weekly time columns for heat rate and emissions rates. In this case we will just apply the annual average to each column, but we still need those columns to be able to concatenate back with df_orispl_unit and have our complete set of generator data
         for e in ['heat_rate', 'co2', 'so2', 'nox', 'mw']:
             for t in scipy.arange(52)+1:
@@ -1638,7 +1688,7 @@ if __name__ == '__main__':
         ferc714_part2_schedule6_csv = 'C:\\Users\\tdeet\\Documents\\data\\raw\\ferc\\ferc_714\\Part 2 Schedule 6 - Balancing Authority Hourly System Lambda.csv'
         ferc714IDs_csv='C:\\Users\\tdeet\\Documents\\data\\raw\\ferc\\ferc_714\\Respondent IDs.csv'
         cems_folder_path ='C:\\Users\\tdeet\\Documents\\data\\raw\\epa\\CEMS'
-        easiur_csv_path ='C:\\Users\\tdeet\\Documents\\data\\raw\\easiur\\egrid_2016_plant_easiur.csv'
+        easiur_csv_path ='C:\\Users\\tdeet\\Documents\\data\\raw\\easiur\\egrid_2016_plant_easiur.csv' # where is this from??
         fuel_commodity_prices_xlsx = 'C:\\Users\\tdeet\\Documents\\data\\processed\\eiaFuelPrices\\fuel_default_prices.xlsx'
         if run_year == 2017:
             egrid_data_xlsx = 'C:\\Users\\tdeet\\Documents\\data\\raw\\eGRID\\egrid2016_data.xlsx'
