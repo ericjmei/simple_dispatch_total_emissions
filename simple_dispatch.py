@@ -85,7 +85,7 @@ class generatorData(object):
         #read in the data. This is a bit slow right now because it reads in more data than needed, but it is simple and straightforward
         self.nerc = nerc
         egrid_year_str = str(math.floor((year / 2.0)) * 2)[2:4] #eGrid is only every other year so we have to use eGrid 2016 to help with a 2017 run, for example
-        if year < 2014:
+        if year < 2014: # NOTE: can probably remove this requirement. eGRID does have CEMS data, and we will only be using those anyway
             egrid_year_str = str(14) #egrid data before 2014 does not have unit level data, so use 2014. We risk missing a few generators that retired between 'year' and 2014.
         print('Reading in unit level data from eGRID...')
         self.egrid_unt = pandas.read_excel(egrid_fname, 'UNT'+egrid_year_str, skiprows=[0]) 
@@ -103,10 +103,10 @@ class generatorData(object):
         self.eia923_1 = eia923_1
         
         print('Reading in data from FERC Form 714...')
-        self.ferc714 = pandas.read_csv(ferc714_fname) # can't find this file, but I think I can create a formatter for this
-        self.ferc714_ids = pandas.read_csv(ferc714IDs_fname) # respondent IDs, not exactly sure what this is used for
+        self.ferc714 = pandas.read_csv(ferc714_fname) 
+        self.ferc714_ids = pandas.read_csv(ferc714IDs_fname) 
         self.cems_folder = cems_folder # we only want data from CEMS anyway
-        self.easiur_per_plant = pandas.read_csv(easiur_fname) # egrid supposedly, but cannot find the source of this file; potentially can remove (?)
+        self.easiur_per_plant = pandas.read_csv(easiur_fname) 
         self.fuel_commodity_prices = pandas.read_excel(fuel_commodity_prices_excel_dir, str(year)) # needs custom updating
         self.cems_validation_run = cems_validation_run # I feel like we can always set to true because we're only evaluating CEMS anyway
         self.hist_downtime = hist_downtime
@@ -154,7 +154,7 @@ class generatorData(object):
         # create two different dataframes for generator: one short and one long
         df_gen_long = df_gen[['ORISPL', 'NAMEPCAP', 'GENNTAN', 'GENYRONL', 'orispl_unit', 'PRMVR', 'FUELG1']].copy()
         df_gen_long.columns = ['orispl', 'mw', 'mwh_ann', 'year_online', 'orispl_unit', 'prime_mover', 'fuel']
-        df_gen = df_gen[['NAMEPCAP', 'GENNTAN', 'GENYRONL', 'orispl_unit']]
+        df_gen = df_gen[['NAMEPCAP', 'GENNTAN', 'GENYRONL', 'orispl_unit']] # short
         df_gen.columns = ['mw', 'mwh_ann', 'year_online', 'orispl_unit']
         
         ##plant-level data: contains fuel, fuel_type, balancing authority, nerc region, and egrid subregion data
@@ -170,7 +170,7 @@ class generatorData(object):
         df_plnt.columns = ['orispl', 'state', 'ba', 'nerc', 'egrid']
        
         ## merge these egrid data together at the unit-level
-        df = df.merge(df_gen, left_index=True, how='left', on='orispl_unit')  
+        #df = df.merge(df_gen, left_index=True, how='left', on='orispl_unit')  # NOTE: not sure what this is supposed to achieve, df has all columns that df_gen does
         df = df.merge(df_plnt, left_index=True, how='left', on='orispl')  
         df = df.merge(df_plnt_fuel, left_index=True, how='left', on='fuel')  
         # keep only the units in the nerc region we're analyzing
@@ -183,7 +183,10 @@ class generatorData(object):
         
         ## analyze empty years
         #for empty year online, look at orispl in egrid_gen instead of orispl_unit 
-        df.loc[df.year_online.isna(), 'year_online'] = df[df.year_online.isna()][['orispl', 'prime_mover', 'fuel']].merge(df_gen_long[['orispl', 'prime_mover', 'fuel', 'year_online']].groupby(['orispl', 'prime_mover', 'fuel'], as_index=False).agg('mean'), on=['orispl', 'prime_mover', 'fuel'])['year_online']
+        df.loc[df.year_online.isna(), 'year_online'] = (df[df.year_online.isna()][['orispl', 'prime_mover', 'fuel']]
+                                                        .merge(df_gen_long[['orispl', 'prime_mover', 'fuel', 'year_online']]
+                                                               .groupby(['orispl', 'prime_mover', 'fuel'], as_index=False)
+                                                               .agg('mean'), on=['orispl', 'prime_mover', 'fuel'])['year_online'])
         #for any remaining empty year onlines, assume self.year (i.e. that they are brand new)
         df.loc[df.year_online.isna(), 'year_online'] = scipy.zeros_like(df.loc[df.year_online.isna(), 'year_online']) + self.year
         
@@ -202,13 +205,19 @@ class generatorData(object):
                   'TRE': ['ok','tx']}
         #compile the different months of CEMS files into one dataframe, df_cems. 
         df_cems = pandas.DataFrame()
+        # change to correct data path
+        abspath = os.path.abspath(__file__)
+        dname = os.path.dirname(abspath)
+        os.chdir(dname)
+        os.chdir(self.cems_folder) # relative folder path from input
         for s in states[self.nerc]:
             state = s.upper() # for data reading purposes
             print("processing CEMS data from " + state + " for " + str(self.year))
             
             # obtain hourly CEMS data for state and year
-            os.chdir(self.cems_folder+"/"+state) # NEED TO EDIT THIS
+            os.chdir("./"+state) # change to state's directory
             df_cems_add = pandas.read_parquet('CEMS_hourly_'+state+'_'+str(self.year)+'.parquet')
+            os.chdir("..") # change to upstream directory
             
             # split date time columns
             to_split = df_cems_add["operating_datetime_utc"] # datetime IN UTC - check that simple dispatch operates this way?

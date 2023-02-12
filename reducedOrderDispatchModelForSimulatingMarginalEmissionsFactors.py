@@ -11,6 +11,7 @@ Requires custom modules "simple_dispatch" and "mefs_from_simple_dispatch", avail
 
 import pickle
 import scipy
+import os
 import os.path
 import pandas
 from simple_dispatch import generatorData
@@ -21,6 +22,13 @@ from  mefs_from_simple_dispatch import plotDispatch
 
 
 if __name__ == '__main__':
+    
+    ## simple dispatch setup, define path names
+    # change path to data folder (same as code folder)
+    abspath = os.path.abspath(__file__)
+    dname = os.path.dirname(abspath)
+    os.chdir(dname)
+    
     run_year = 2017
     #input variables. Right now the github only has 2017 data on it.
     #specific the location of the data directories
@@ -32,8 +40,8 @@ if __name__ == '__main__':
     # easiur data from here: https://barney.ce.cmu.edu/~jinhyok/easiur/online/
     # fuel_default_prices.xlsx compiled from data from https://www.eia.gov/
     ferc714_part2_schedule6_csv = 'Part 2 Schedule 6 - Balancing Authority Hourly System Lambda.csv'
-    ferc714IDs_csv='Respondent IDs.csv'
-    cems_folder_path ='C:\\Users\\tdeet\\Documents\\data\\raw\\epa\\CEMS'
+    ferc714IDs_csv= 'Respondent IDs.csv'
+    cems_folder_path ='../Data/CAMD/PUDL retrieved hourly' # relative path for all CEMS outputs
     easiur_csv_path ='egrid_2016_plant_easiur.csv'
     fuel_commodity_prices_xlsx = 'fuel_default_prices.xlsx'
     if run_year == 2017:
@@ -48,15 +56,30 @@ if __name__ == '__main__':
     if run_year == 2014:
         egrid_data_xlsx = 'egrid2014_data.xlsx'
         eia923_schedule5_xlsx = 'EIA923_Schedules_2_3_4_5_M_12_2014_Final_Revision.xlsx'   
+       
+    
     #loop through nerc regions
     #for nerc_region in ['TRE']:
-    for nerc_region in ['TRE', 'MRO', 'WECC', 'SPP', 'SERC', 'RFC', 'FRCC', 'NPCC']:
+    #for nerc_region in ['TRE', 'MRO', 'WECC', 'SPP', 'SERC', 'RFC', 'FRCC', 'NPCC']:
+    for nerc_region in ['SERC']:
         try:
             #if you've already run generatorData before, there will be a shortened pickled dictionary that we can just load in now. The 2017 pickled dictionaries can be downloaded from the simple_dispatch github repository. You can also download cems data and compile them using the generatorData object
             gd_short = pickle.load(open('generator_data_short_%s_%s.obj'%(nerc_region, str(run_year)), 'r'))
         except:
             #run the generator data object
-            gd = generatorData(nerc_region, egrid_fname=egrid_data_xlsx, eia923_fname=eia923_schedule5_xlsx, ferc714IDs_fname=ferc714IDs_csv, ferc714_fname=ferc714_part2_schedule6_csv, cems_folder=cems_folder_path, easiur_fname=easiur_csv_path, include_easiur_damages=True, year=run_year, fuel_commodity_prices_excel_dir=fuel_commodity_prices_xlsx, hist_downtime=False, coal_min_downtime = 12, cems_validation_run=False)   
+            gd = generatorData(nerc_region, 
+                               egrid_fname=egrid_data_xlsx, 
+                               eia923_fname=eia923_schedule5_xlsx, 
+                               ferc714IDs_fname=ferc714IDs_csv, 
+                               ferc714_fname=ferc714_part2_schedule6_csv, 
+                               cems_folder=cems_folder_path, 
+                               easiur_fname=easiur_csv_path, 
+                               include_easiur_damages=False, # NOTE: may remove this entirely to avoid needing to do this
+                               year=run_year, 
+                               fuel_commodity_prices_excel_dir=fuel_commodity_prices_xlsx, 
+                               hist_downtime=True, # should always be true
+                               coal_min_downtime = 12, 
+                               cems_validation_run=True) # makes sure only CEMS boilers are included in eGRID. We only need CEMS plants
             #pickle the trimmed version of the generator data object
             gd_short = {'year': gd.year, 'nerc': gd.nerc, 'hist_dispatch': gd.hist_dispatch, 'demand_data': gd.demand_data, 'mdt_coal_events': gd.mdt_coal_events, 'df': gd.df}
             pickle.dump(gd_short, open('generator_data_short_%s_%s.obj'%(nerc_region, str(run_year)), 'w'))
@@ -84,7 +107,7 @@ if __name__ == '__main__':
     #empty dataframe to hold error calculations
     error_main_df = pandas.DataFrame(columns=(['nerc', 'variable', 'co2_tot_hour_vs_rolling', 'co2_slope_sim', 'co2_slope_cedm', 'so2_tot_hour_vs_rolling', 'so2_slope_sim', 'so2_slope_cedm', 'nox_tot_hour_vs_rolling', 'nox_slope_sim', 'nox_slope_cedm']))
     #loop through the nerc regions and generate plots
-    for nerc_region in ['TRE']:
+    for nerc_region in ['SERC']:
     #for nerc_region in ['FRCC', 'TRE', 'WECC', 'SPP', 'MRO', 'SERC', 'RFC', 'NPCC']:
         for sim_co2_price in [0]:
             fig_suffix = '%s_%s_%sco2price.png'%(nerc_region, str(run_year), str(sim_co2_price))

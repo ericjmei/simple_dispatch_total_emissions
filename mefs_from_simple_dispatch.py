@@ -23,7 +23,7 @@ import scipy
 import scipy.linalg
 import scipy.stats
 import math
-import sklearn.metrics
+import sklearn
 
 
 
