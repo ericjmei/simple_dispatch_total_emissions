@@ -11,6 +11,7 @@ Requires custom modules "simple_dispatch" and "mefs_from_simple_dispatch", avail
 
 import pickle
 import scipy
+import numpy
 import os
 import os.path
 import pandas
@@ -24,10 +25,6 @@ from  mefs_from_simple_dispatch import plotDispatch
 if __name__ == '__main__':
     
     ## simple dispatch setup, define path names
-    # change path to data folder (same as code folder)
-    abspath = os.path.abspath(__file__)
-    dname = os.path.dirname(abspath)
-    os.chdir(dname)
     
     run_year = 2017
     #input variables. Right now the github only has 2017 data on it.
@@ -62,9 +59,15 @@ if __name__ == '__main__':
     #for nerc_region in ['TRE']:
     #for nerc_region in ['TRE', 'MRO', 'WECC', 'SPP', 'SERC', 'RFC', 'FRCC', 'NPCC']:
     for nerc_region in ['SERC']:
+        
         try:
+            # change path to data folder (same as code folder)
+            abspath = os.path.abspath(__file__)
+            dname = os.path.dirname(abspath)
+            os.chdir(dname)
+            os.chdir("./debugging") # for ease
             #if you've already run generatorData before, there will be a shortened pickled dictionary that we can just load in now. The 2017 pickled dictionaries can be downloaded from the simple_dispatch github repository. You can also download cems data and compile them using the generatorData object
-            gd_short = pickle.load(open('generator_data_short_%s_%s.obj'%(nerc_region, str(run_year)), 'r'))
+            gd_short = pickle.load(open('generator_data_short_%s_%s.obj'%(nerc_region, str(run_year)), 'rb'))
         except:
             #run the generator data object
             gd = generatorData(nerc_region, 
@@ -82,8 +85,9 @@ if __name__ == '__main__':
                                cems_validation_run=True) # makes sure only CEMS boilers are included in eGRID. We only need CEMS plants
             #pickle the trimmed version of the generator data object
             gd_short = {'year': gd.year, 'nerc': gd.nerc, 'hist_dispatch': gd.hist_dispatch, 'demand_data': gd.demand_data, 'mdt_coal_events': gd.mdt_coal_events, 'df': gd.df}
-            pickle.dump(gd_short, open('generator_data_short_%s_%s.obj'%(nerc_region, str(run_year)), 'w'))
-        #now that we have the generator data cleaned up, we can build the merit order and run the dispatch
+            pickle.dump(gd_short, open('generator_data_short_%s_%s.obj'%(nerc_region, str(run_year)), 'wb'))
+        
+        ## now that we have the generator data cleaned up, we can build the merit order and run the dispatch
         #we can add a co2 price to the dispatch calculation
         for co2_dol_per_ton in [0]:
             #run the bidStack object - use information about the generators (from gd_short) to create a merit order (bid stack) of the nerc region's generators
@@ -91,18 +95,21 @@ if __name__ == '__main__':
             #produce bid stack plots
             #bid_stack_cost = bs.plotBidStackMultiColor('gen_cost', plot_type='bar', fig_dim = (4,4), production_cost_only=True) #plot the merit order
             bid_stack_cost = bs.plotBidStackMultiColor('gen_cost', plot_type='bar', fig_dim = (4,4), production_cost_only=False) #plot the merit order
-            bid_stack_co2 = bs.plotBidStackMultiColor('co2', plot_type='bar') #plot the merit order                 
+            bid_stack_co2 = bs.plotBidStackMultiColor('co2', plot_type='bar') #plot emissions
+            bid_stack_so2 = bs.plotBidStackMultiColor('so2', plot_type='bar') #plot emissions
+            bid_stack_nox = bs.plotBidStackMultiColor('nox', plot_type='bar') #plot emissions                 
             #run the dispatch object - use the nerc region's merit order (bs), a demand timeseries (gd.demand_data), and a time array (default is array([ 1,  2, ... , 51, 52]) for 52 weeks to run a whole year)
             #if you've already run and saved the dispatch, skip this step
             if not os.path.exists('simple_dispatch_%s_%s_%sco2price.csv'%(nerc_region, str(run_year), str(co2_dol_per_ton))):
                 #run the dispatch object
-                dp = dispatch(bs, gd_short.demand_data, time_array=scipy.arange(52)+1) #set up the object
+                dp = dispatch(bs, gd_short["demand_data"], time_array=numpy.arange(52)+1) #set up the object
                 #dp = dispatch(bs, gd.demand_data, time_array=scipy.arange(3)+1) #test run          
                 dp.calcDispatchAll() #function that solves the dispatch for each time period in time_array (default for each week of the year)
                 #save dispatch results 
                 dp.df.to_csv('simple_dispatch_%s_%s_%sco2price.csv'%(nerc_region, str(run_year), str(co2_dol_per_ton)), index=False)
+                
     #now that the dispatch is run, we can calculate the marginal emissions factors and plot them            
-    cedm_mefs_df = pandas.read_csv('mefs_by_decile_nerc.csv')[['year', 'region', 'dec', 'pollutant', 'factor']] #from CEDM: https://cedm.shinyapps.io/MarginalFactors/
+    #cedm_mefs_df = pandas.read_csv('mefs_by_decile_nerc.csv')[['year', 'region', 'dec', 'pollutant', 'factor']] #from CEDM: https://cedm.shinyapps.io/MarginalFactors/
     run_year = 2017
     #empty dataframe to hold error calculations
     error_main_df = pandas.DataFrame(columns=(['nerc', 'variable', 'co2_tot_hour_vs_rolling', 'co2_slope_sim', 'co2_slope_cedm', 'so2_tot_hour_vs_rolling', 'so2_slope_sim', 'so2_slope_cedm', 'nox_tot_hour_vs_rolling', 'nox_slope_sim', 'nox_slope_cedm']))

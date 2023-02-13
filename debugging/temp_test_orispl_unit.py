@@ -28,7 +28,7 @@ df_orispl_unit.date = df_orispl_unit.date.str.replace('/','-')
 temp = pandas.DataFrame(df_orispl_unit.date.str.split('-').tolist(), columns=['month', 'day', 'year'], index=df_orispl_unit.index).astype(float)
 df_orispl_unit['monthday'] = temp.year*10000 + temp.month*100 + temp.day
 
-
+#%%
 ###
 #loop through the weeks, slice the data, and find the average heat rates and emissions rates
 ## first, add a column 't' that says which week of the simulation we are in
