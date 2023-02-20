@@ -874,7 +874,9 @@ class generatorData(object):
 
 
 class bidStack(object):
-    def __init__(self, gen_data_short, co2_dol_per_kg=0.0, so2_dol_per_kg=0.0, nox_dol_per_kg=0.0, coal_dol_per_mmbtu=0.0, coal_capacity_derate = 0.0, time=1, dropNucHydroGeo=False, include_min_output=True, initialization=True, coal_mdt_demand_threshold = 0.0, mdt_weight=0.50):
+    def __init__(self, gen_data_short, co2_dol_per_kg=0.0, so2_dol_per_kg=0.0, nox_dol_per_kg=0.0, 
+                 coal_dol_per_mmbtu=0.0, coal_capacity_derate = 0.0, time=1, dropNucHydroGeo=False, 
+                 include_min_output=True, initialization=True, coal_mdt_demand_threshold = 0.0, mdt_weight=0.50):
         """ 
         1) Bring in the generator data created by the "generatorData" class.
         2) Calculate the generation cost for each generator and sort the generators by generation cost. Default emissions prices [$/kg] are 0.00 for all emissions.
@@ -984,10 +986,10 @@ class bidStack(object):
         # #add a zero generator so that the bid stack goes all the way down to zero. This is important for calculating information for the marginal generator when the marginal generator is the first one in the bid stack.
         # df['dmg_easiur'] = df['dmg' + str(self.time)]
         #if self.initialization:
-        df = df.append(df.loc[0]*0) ## NOTE: replaced append with concat. REPLACE IF HAVING ISSUES AGAIN
+        df = df.append(df.loc[0]*0) ## NOTE: TRYING to replace this with concat
         df = df.append(df.iloc[-1])
-        # df = df.concat([df, df.loc[0]*0], axis=1) 
-        # df = df.concat([df, df.iloc[-1]], axis=1)
+        # df = pandas.concat([df, df.loc[0].to_frame().transpose()*0], axis=0) 
+        # df = pandas.concat([df, df.iloc[-1].to_frame().transpose()], axis=0)  
         #self.initialization = False
         df.sort_values('gen_cost', inplace=True)
         #move coal_0 and ngcc_0 to the front of the merit order regardless of their gen cost
@@ -1176,7 +1178,8 @@ class bidStack(object):
         ---
         """
         df = self.df.copy(deep=True)
-        binary_demand_is_below_demand_threshold = (scipy.maximum(0, - (df.f.apply(self.returnTotalFuelMix, args=(('is_coal'),)) - self.returnTotalFuelMix(self.coal_mdt_demand_threshold, 'is_coal'))) > 0).values.astype(int)
+        temp = df.f.apply(self.returnTotalFuelMix, args=(('is_coal'),)) - self.returnTotalFuelMix(self.coal_mdt_demand_threshold, 'is_coal')
+        binary_demand_is_below_demand_threshold = (scipy.maximum(0, - temp.fillna(0)) > 0).values.astype(int)
         weight_marginal_unit = (1-self.mdt_weight) + self.mdt_weight*(1-binary_demand_is_below_demand_threshold)
         weight_mindowntime_units = 1 - weight_marginal_unit
         #INCLUDING MIN OUTPUT
@@ -1366,12 +1369,15 @@ class bidStack(object):
         if plot_type == 'line':
             ax.plot( self.df.demand/1000, y_data, linewidth=2.5)
         elif plot_type == 'bar':
-            ax.bar(self.df.demand/1000, height=y_data_e, width=-scipy.maximum(0.2, self.df['mw' + str(self.time)]/1000), color=color_2, align='edge'), ax.bar(self.df.demand/1000, height=y_data, width=-scipy.maximum(0.2, self.df['mw' + str(self.time)]/1000), color=self.df.fuel_color.replace('', empty_color), align='edge')
-            ##add legend above chart
-            #color_legend = []
-            #for c in self.df.fuel_color.unique():
-            #    color_legend.append(matplotlib.patches.Patch(color=c, label=self.df.fuel_type[self.df.fuel_color==c].iloc[0]))
-            #ax.legend(handles=color_legend, bbox_to_anchor=(0.5, 1.2), loc='upper center', ncol=3, fancybox=True, shadow=True)
+            ax.bar(self.df.demand/1000, height=y_data_e, width=-scipy.maximum(0.2, self.df['mw' + str(self.time)]/1000), color=color_2, align='edge'),
+            ax.bar(self.df.demand/1000, height=y_data, width=-scipy.maximum(0.2, self.df['mw' + str(self.time)]/1000), 
+                   color=self.df.fuel_color.replace('', empty_color), align='edge')
+            
+            ## add legend above chart
+            color_legend = []
+            for c in self.df.fuel_color.unique():
+                color_legend.append(matplotlib.patches.Patch(color=c, label=self.df.fuel_type[self.df.fuel_color==c].iloc[0]))
+            ax.legend(handles=color_legend, bbox_to_anchor=(0.5, 1.2), loc='upper center', ncol=3, fancybox=True, shadow=True)
         else:
             print('***Error: enter valid argument for plot_type')
             pass
@@ -1407,28 +1413,22 @@ class bidStack(object):
     
     def plotBidStackMultiColor(self, df_column, plot_type, fig_dim = (4,4), production_cost_only=True):    
         bs_df_fuel_color = self.df.copy()
-        
+        # colors for all fuel and prime mover types
         c = {'ng': {'cc': '#377eb8', 'ct': '#377eb8', 'gt': '#4daf4a', 'st': '#984ea3'}, 
              'sub': {'st': '#e41a1c'}, 
              'lig': {'st': '#ffff33'}, 
              'bit': {'st': '#ff7f00'}, 
              'rc': {'st': '#252525'}}
                     
-        bs_df_fuel_color['fuel_color'] = '#bcbddc'
+        bs_df_fuel_color['fuel_color'] = '#bcbddc' # default color
         for c_key in c.keys():
             for p_key in c[c_key].keys():
                 bs_df_fuel_color.loc[(bs_df_fuel_color.fuel == c_key) & (bs_df_fuel_color.prime_mover == p_key), 'fuel_color'] = c[c_key][p_key]
         
         #color for any generators without a fuel_color entry
         empty_color = '#dd1c77'
-        #create color array for the emissions cost
         color_2 = bs_df_fuel_color.fuel_color.replace('', empty_color)
-        #color_2 = color_2.replace('#888888', '#F0F0F0')
-        #color_2 = color_2.replace('#bf5b17', '#E0E0E0')
-        #color_2 = color_2.replace('#7fc97f', '#D8D8D8')
-        #color_2 = color_2.replace('#252525', '#D0D0D0')
-        #color_2 = color_2.replace('#dd1c77', '#C0C0C0')
-        #color_2 = color_2.replace('#bcbddc', '#E0E0E0')
+
         #set up the y data
         y_data_e = self.df.gen_cost * 0 #emissions bar chart. Default is zero unless not production_cost_only
         if df_column == 'gen_cost':
@@ -1452,12 +1452,17 @@ class bidStack(object):
         if plot_type == 'line':
             ax.plot( self.df.demand/1000, y_data, linewidth=2.5)
         elif plot_type == 'bar':
-            ax.bar(self.df.demand/1000, height=y_data_e, width=-scipy.maximum(0.2, self.df['mw' + str(self.time)]/1000), color=color_2, align='edge'), ax.bar(self.df.demand/1000, height=y_data, width=-scipy.maximum(0.2, self.df['mw' + str(self.time)]/1000), color=color_2, align='edge')
-            ##add legend above chart
+            ax.bar(self.df.demand/1000, height=y_data_e, width=-scipy.maximum(0.2, self.df['mw' + str(self.time)]/1000), color=color_2, align='edge') 
+            ax.bar(self.df.demand/1000, height=y_data, width=-scipy.maximum(0.2, self.df['mw' + str(self.time)]/1000), color=color_2, align='edge')
+            
+            ## add legend above chart
             color_legend = []
             for c in bs_df_fuel_color.fuel_color.unique():
-                color_legend.append(matplotlib.patches.Patch(color=c, label=bs_df_fuel_color.fuel[bs_df_fuel_color.fuel_color==c].iloc[0] + '_' + bs_df_fuel_color.prime_mover[bs_df_fuel_color.fuel_color==c].iloc[0]))
-            ax.legend(handles=color_legend, bbox_to_anchor=(0.5, 1.2), loc='upper center', ncol=3, fancybox=True, shadow=True)
+                color_legend.append(matplotlib.patches.Patch(color=c, 
+                                                             label=bs_df_fuel_color.fuel[bs_df_fuel_color.fuel_color==c].iloc[0] 
+                                                             + '_' + bs_df_fuel_color.prime_mover[bs_df_fuel_color.fuel_color==c].iloc[0]))
+            ax.legend(handles=color_legend, bbox_to_anchor=(0.5, 1.2), loc='upper center', 
+                      ncol=3, fancybox=True, shadow=True) # empty ('_') will be ignored
         else:
             print('***Error: enter valid argument for plot_type')
             pass
@@ -1711,7 +1716,6 @@ class dispatch(object):
         #otherwise, run the dispatch in time slices, updating the bid stack each slice
         else:
             for t in self.time_array:
-                print(str(round(t/float(len(self.time_array)),3)*100) + '% Complete')
                 #update the bidStack object to the current week
                 self.bs.updateTime(t)
                 #calculate the dispatch for the time slice over which the updated fuel prices are relevant
@@ -1740,74 +1744,10 @@ class dispatch(object):
                 #for each minimum downtime event, recalculate the dispatch by inputting the bs_mdt_dict bidStacks into calcDispatchSlice to override the existing dp.df results datafram
                 for i, e in events_mdt_coal_t.iterrows():
                     self.calcDispatchSlice(bs_mdt_dict[e.demand_threshold], start_date=e.start ,end_date=e.end)
+                print(str(round(t/float(len(self.time_array)),3)*100) + '% Complete')
                 
         
 
 
-if __name__ == '__main__':
-    run_year = 2017
-    for nreg in ['WECC']:
-    #for nreg in ['SERC', 'NPCC']:
-    #for nreg in ['RFC', 'FRCC']:
-    #for nreg in ['TRE', 'MRO', 'WECC', 'SPP']:
-    #for nreg in ['TRE', 'MRO', 'WECC', 'SPP', 'SERC', 'RFC', 'FRCC', 'NPCC']:
-        nerc_region = nreg
-        #input variables. Right now the github only has 2017 data on it.
-        historical_dispatch_save_folder = 'C:\\Users\\tdeet\\Documents\\data\\processed\\epa\\CEMS' #where to save the historical dispatch results
-        #simulated_dispatch_save_folder = 'C:\\Users\\tdeet\\Documents\\analysis\\modules\\python\\simple_dispatch\\co2_scale\\%s'%(str(run_year)) #where to save the simulated dispatch results
-        simulated_dispatch_save_folder = 'C:\\Users\\tdeet\\Documents\\analysis\\modules\\python\\simple_dispatch' #where to save the simulated dispatch results
-        #specific the location of the data directories
-        ferc714_part2_schedule6_csv = 'C:\\Users\\tdeet\\Documents\\data\\raw\\ferc\\ferc_714\\Part 2 Schedule 6 - Balancing Authority Hourly System Lambda.csv'
-        ferc714IDs_csv='C:\\Users\\tdeet\\Documents\\data\\raw\\ferc\\ferc_714\\Respondent IDs.csv'
-        cems_folder_path ='C:\\Users\\tdeet\\Documents\\data\\raw\\epa\\CEMS'
-        easiur_csv_path ='C:\\Users\\tdeet\\Documents\\data\\raw\\easiur\\egrid_2016_plant_easiur.csv' # where is this from??
-        fuel_commodity_prices_xlsx = 'C:\\Users\\tdeet\\Documents\\data\\processed\\eiaFuelPrices\\fuel_default_prices.xlsx'
-        if run_year == 2017:
-            egrid_data_xlsx = 'C:\\Users\\tdeet\\Documents\\data\\raw\\eGRID\\egrid2016_data.xlsx'
-            eia923_schedule5_xlsx = 'C:\\Users\\tdeet\\Documents\\data\\raw\\eia\\eia9232017\\EIA923_Schedules_2_3_4_5_M_12_2017_Final_Revision.xlsx'
-        if run_year == 2016:
-            egrid_data_xlsx = 'C:\\Users\\tdeet\\Documents\\data\\raw\\eGRID\\egrid2016_data.xlsx'
-            eia923_schedule5_xlsx = 'C:\\Users\\tdeet\\Documents\\data\\raw\\eia\\eia9232016\\EIA923_Schedules_2_3_4_5_M_12_2016_Final_Revision.xlsx'
-        if run_year == 2015:
-            egrid_data_xlsx = 'C:\\Users\\tdeet\\Documents\\data\\raw\\eGRID\\egrid2014_data.xlsx'
-            eia923_schedule5_xlsx = 'C:\\Users\\tdeet\\Documents\\data\\raw\\eia\\eia9232015\\EIA923_Schedules_2_3_4_5_M_12_2015_Final_Revision.xlsx'
-        if run_year == 2014:
-            egrid_data_xlsx = 'C:\\Users\\tdeet\\Documents\\data\\raw\\eGRID\\egrid2014_data.xlsx'
-            eia923_schedule5_xlsx = 'C:\\Users\\tdeet\\Documents\\data\\raw\\eia\\eia9232014\\EIA923_Schedules_2_3_4_5_M_12_2014_Final_Revision.xlsx'   
-        if run_year == 2013:
-            #use 2014 eGrid because 2012 eGrid doesn't have unit-level information. We risk having no information for plants that retired in 2012 or 2013
-            egrid_data_xlsx = 'C:\\Users\\tdeet\\Documents\\data\\raw\\eGRID\\egrid2014_data.xlsx'
-            #note that the downloaded version of EIA923 for 2013 Page 1 and Page 5 have different column headers than all of the other years. I changed these column headers in the actual xlsx file to match the 2012 EIA923
-            eia923_schedule5_xlsx = 'C:\\Users\\tdeet\\Documents\\data\\raw\\eia\\eia9232013\\EIA923_Schedules_2_3_4_5_2013_Final_Revision.xlsx'       
-        if run_year == 2012:
-            #use 2014 eGrid because 2012 eGrid doesn't have unit-level information. We risk having no information for plants that retired in 2012 or 2013
-            egrid_data_xlsx = 'C:\\Users\\tdeet\\Documents\\data\\raw\\eGRID\\egrid2014_data.xlsx'
-            eia923_schedule5_xlsx = 'C:\\Users\\tdeet\\Documents\\data\\raw\\eia\\eia9232012\\EIA923_Schedules_2_3_4_5_M_12_2012_Final_Revision.xlsx'
-        #run the generator data object
-        gd = generatorData(nerc_region, egrid_fname=egrid_data_xlsx, eia923_fname=eia923_schedule5_xlsx, ferc714IDs_fname=ferc714IDs_csv, ferc714_fname=ferc714_part2_schedule6_csv, cems_folder=cems_folder_path, easiur_fname=easiur_csv_path, include_easiur_damages=True, year=run_year, fuel_commodity_prices_excel_dir=fuel_commodity_prices_xlsx, hist_downtime=False, coal_min_downtime = 12, cems_validation_run=False)   
-        #create a shortened version that has only the essentials (so we can pickle)
-        gd_short = {'year': gd.year, 'nerc': gd.nerc, 'hist_dispatch': gd.hist_dispatch, 'demand_data': gd.demand_data, 'mdt_coal_events': gd.mdt_coal_events, 'df': gd.df}
-        #save the historical dispatch  
-        gd_short.hist_dispatch.to_csv(historical_dispatch_save_folder + '\\%s_%s_hourly_demand_and_fuelmix.csv'%(str(run_year), nerc_region))
-        
-        for nr in [0]:
-        #for nr in [0, 4, 10, 25, 50, 100, 200]: #base case
-        #for nr in [2, 6, 8, 15, 20, 30, 40, 60, 80, 125, 150, 1000]: #base case
-        #for nr in [0, 2, 4, 6, 8, 10, 15, 20, 25, 30, 40, 50, 60, 80, 100, 125, 150, 200, 1000]:
-            co2_dol_per_ton = nr
-            #run the bidStack object - use information about the generators (from gd) to create a merit order (bid stack) of the nerc region's generators
-            bs = bidStack(gd_short, co2_dol_per_kg=(co2_dol_per_ton / 907.185), time=30, dropNucHydroGeo=True, include_min_output=False, mdt_weight=0.5) #NOTE: set dropNucHydroGeo to True if working with data that only looks at fossil fuels (e.g. CEMS)
-            #bid_stack_cost = bs.plotBidStackMultiColor('gen_cost', plot_type='bar', fig_dim = (4,4), production_cost_only=True) #plot the merit order
-            bid_stack_cost = bs.plotBidStackMultiColor_Coal_NGCC_NGGT_NGOther('gen_cost', plot_type='bar', fig_dim = (4,4), production_cost_only=False) #plot the merit order
-            bid_stack_cost.savefig('C:\\Users\\tdeet\\Documents\\media\\publications\\2018-10 coal gas redispatch\\images_raw\\bid stacks\\fStackCost%s_%s_%sco2_v27.png'%(nerc_region, str(run_year), str(bs.co2_dol_per_kg * 907.185)), dpi=500, bbox_inches='tight')
-            bid_stack_co2 = bs.plotBidStackMultiColor_Coal_NGCC_NGGT_NGOther('co2', plot_type='bar') #plot the merit order 
-            bid_stack_co2.savefig('C:\\Users\\tdeet\\Documents\\media\\publications\\2018-10 coal gas redispatch\\images_raw\\bid stacks\\fStackCo2%s_%s_%sco2_v27.png'%(nerc_region, str(run_year), str(bs.co2_dol_per_kg * 907.185)), dpi=500, bbox_inches='tight')                   
-            #run the dispatch object - use the nerc region's merit order (bs), a demand timeseries (gd.demand_data), and a time array (default is array([ 1,  2, ... , 51, 52]) for 52 weeks to run a whole year)
-           
-            dp = dispatch(bs, gd_short.demand_data, time_array=numpy.arange(52)+1) #set up the object
-            #dp = dispatch(bs, gd.demand_data, time_array=numpy.arange(3)+1) #test run          
-            dp.calcDispatchAll() #function that solves the dispatch for each time period in time_array (default for each week of the year)
-            #save dispatch results 
-            dp.df.to_csv(simulated_dispatch_save_folder + '\\dispatch_output_weekly_%s_%s_%sco2_v27_coal_vom_same.csv'%(nerc_region, str(run_year), str(co2_dol_per_ton)), index=False)
-   
-
+if __name__ == '__main__': 
+    print('nothing')

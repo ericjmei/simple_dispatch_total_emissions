@@ -9,7 +9,10 @@ New script to run Simple Dispatch from
 
 import os
 import pickle
+import numpy as np
 from simple_dispatch import generatorData
+from simple_dispatch import bidStack
+from simple_dispatch import dispatch
 
 if __name__ == '__main__':
     
@@ -35,18 +38,21 @@ if __name__ == '__main__':
     eia923_schedule5_xlsx = 'EIA923_Schedules_2_3_4_5_M_12_2017_Final_Revision.xlsx'
     run_year = 2017
     
+    # obtain code folder name for future folder changing
+    abspath = os.path.abspath(__file__)
+    base_dname = os.path.dirname(abspath)
+    
     #for nerc_region in ['TRE', 'MRO', 'WECC', 'SPP', 'SERC', 'RFC', 'FRCC', 'NPCC']:
-    for nerc_region in ['SERC']:
+    for nerc_region in ['WECC', 'NPCC', 'RFC']:
         
+        ## create/retrieve simple generator dispatch object
         try: # get shortened pickeled dictionary if generatorData has already been run for the particular year and region
             # change path to simple dispatch output data folder
-            abspath = os.path.abspath(__file__)
-            dname = os.path.dirname(abspath)
-            os.chdir(dname)
+            os.chdir(base_dname) 
             os.chdir("../Data/Simple Dispatch Outputs") # where to access output data relative to code folder
             gd_short = pickle.load(open('generator_data_short_%s_%s.obj'%(nerc_region, str(run_year)), 'rb')) # load generatordata object
         except:
-            #run the generator data object
+            # run the generator data object
             gd = generatorData(nerc_region, 
                                input_folder_rel_path=input_folder_rel_path,
                                egrid_fname=egrid_data_xlsx, 
@@ -61,12 +67,49 @@ if __name__ == '__main__':
                                hist_downtime=True, # should always be true
                                coal_min_downtime = 12, 
                                cems_validation_run=True) # makes sure only CEMS boilers are included in eGRID. We only need CEMS plants
-            #pickle the trimmed version of the generator data object
+            
+            # pickle the trimmed version of the generator data object
             gd_short = {'year': gd.year, 'nerc': gd.nerc, 'hist_dispatch': gd.hist_dispatch, 'demand_data': gd.demand_data, 
                         'mdt_coal_events': gd.mdt_coal_events, 'df': gd.df}
             # change path to simple dispatch output data folder
-            abspath = os.path.abspath(__file__)
-            dname = os.path.dirname(abspath)
-            os.chdir(dname)
+            os.chdir(base_dname)
             os.chdir("../Data/Simple Dispatch Outputs") # where to access output data relative to code folder
             pickle.dump(gd_short, open('generator_data_short_%s_%s.obj'%(nerc_region, str(run_year)), 'wb'))
+        
+        ## save historical actual dispatch
+        gd_short["hist_dispatch"].to_csv('actual_dispatch_'+nerc_region+'_'+str(run_year)+'.csv', index=False)
+        
+        ## create bidStack object and save merit order figures
+        #run the bidStack object - use information about the generators (from gd_short) to create a merit order (bid stack) of the nerc region's generators
+        week = 30 # week that bid stack is calculated
+        bs = bidStack(gd_short, time=week, dropNucHydroGeo=True, include_min_output=True, 
+                      mdt_weight=0.5) #NOTE: set dropNucHydroGeo to True if working with data that only looks at fossil fuels (e.g. CEMS)
+        
+        # produce bid stack plots
+        bid_stack_cost = bs.plotBidStackMultiColor('gen_cost', plot_type='bar', fig_dim = (4,4), production_cost_only=True) #plot the merit order
+        bid_stack_co2 = bs.plotBidStackMultiColor('co2', plot_type='bar') #plot CO2 emissions
+        bid_stack_so2 = bs.plotBidStackMultiColor('so2', plot_type='bar') #plot SO2 emissions
+        bid_stack_nox = bs.plotBidStackMultiColor('nox', plot_type='bar') #plot NOx emissions           
+        
+        # save plots
+        # change path to simple dispatch merit order figures folder
+        os.chdir(base_dname)
+        os.chdir("../Figures/Simple Dispatch Merit Orders and Emissions") # where to save figures relative to code folder
+        fn = nerc_region + '_' + str(run_year) + '_week_' + str(week) # base name for saving file
+        bid_stack_cost.savefig(fn+"_merit_order_"+".png", dpi=bid_stack_cost.dpi*10) # save at plot dpi*10
+        bid_stack_co2.savefig(fn+"_unit_emissions_co2"+".png", dpi=bid_stack_co2.dpi*10) # save at plot dpi*10
+        bid_stack_so2.savefig(fn+"_unit_emissions_so2"+".png", dpi=bid_stack_so2.dpi*10) # save at plot dpi*10
+        bid_stack_nox.savefig(fn+"_unit_emissions_nox"+".png", dpi=bid_stack_nox.dpi*10) # save at plot dpi*10
+        
+        
+        ## run and save the dispatch object - use the nerc region's merit order (bs), a demand timeseries (gd.demand_data), 
+        #  and a time array (default is array([ 1,  2, ... , 51, 52]) for 52 weeks to run a whole year)
+        # change path to simple dispatch output data folder
+        os.chdir(base_dname)
+        os.chdir("../Data/Simple Dispatch Outputs") # where to access output data relative to code folder
+        if not os.path.exists('simple_dispatch_'+nerc_region+'_'+str(run_year)+'.csv'): #if you've already run and saved the dispatch, skip this step
+            #run the dispatch object
+            dp = dispatch(bs, gd_short["demand_data"], time_array=np.arange(52)+1) #set up the object         
+            dp.calcDispatchAll() #function that solves the dispatch for each time period in time_array (default for each week of the year)
+            #save dispatch results 
+            dp.df.to_csv('simple_dispatch_'+nerc_region+'_'+str(run_year)+'.csv', index=False)
