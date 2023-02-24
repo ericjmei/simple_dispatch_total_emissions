@@ -2,7 +2,9 @@
 """
 Created on Wed Feb 15 09:05:10 2023
 
-New script to run Simple Dispatch from
+Runs Simple Dispatch to simulate actual NERC emissions
+Inputs: FERC 714, eGRID, EIA 923, EPA CEMS
+Outputs: actual observed emissions and demand, modeled actual emissions and demand, generatorData object
 
 @author: emei3
 """
@@ -16,7 +18,7 @@ from simple_dispatch import dispatch
 
 if __name__ == '__main__':
     
-    ## simple dispatch setup, define path names
+    ## simple dispatch setup, define path and file names
     # NOTE: working on getting the FERC and EIA data from PUDL
     
     # ferc 714 data from here: https://www.ferc.gov/docs-filing/forms/form-714/data.asp
@@ -34,16 +36,35 @@ if __name__ == '__main__':
     fuel_commodity_prices_xlsx = 'fuel_default_prices.xlsx'
     
     # these will change with every year
-    egrid_data_xlsx = 'egrid2016_data.xlsx'
-    eia923_schedule5_xlsx = 'EIA923_Schedules_2_3_4_5_M_12_2017_Final_Revision.xlsx'
-    run_year = 2017
+    run_year = 2016 ## specify run year
+    eia923_schedule5_xlsx = 'EIA923_Schedules_2_3_4_5_M_12_'+str(run_year)+'_Final_Revision.xlsx' # EIA 923
+    # different run years will have different eGRIDs
+    if run_year == 2006:
+        egrid_data_xlsx = 'egrid2005_data.xlsx'
+    elif run_year == 2007 | run_year == 2008:
+        egrid_data_xlsx = 'egrid2007_data.xlsx'
+    elif run_year == 2009:
+        egrid_data_xlsx = 'egrid2009_data.xlsx'
+    elif run_year == 2010 | run_year == 2011:
+        egrid_data_xlsx = 'egrid2010_data.xlsx'
+    elif run_year == 2012 | run_year == 2013:
+        egrid_data_xlsx = 'egrid2012_data.xlsx'
+    elif run_year == 2014 | run_year == 2015:
+        egrid_data_xlsx = 'egrid2014_data.xlsx'
+    elif run_year == 2016 | run_year == 2017:
+        egrid_data_xlsx = 'egrid2016_data.xlsx'
+    elif run_year == 2018:
+        egrid_data_xlsx = 'egrid2018_data.xlsx'
+    elif run_year == 2019:
+        egrid_data_xlsx = 'egrid2019_data.xlsx'
+    
     
     # obtain code folder name for future folder changing
     abspath = os.path.abspath(__file__)
     base_dname = os.path.dirname(abspath)
     
     #for nerc_region in ['TRE', 'MRO', 'WECC', 'SPP', 'SERC', 'RFC', 'FRCC', 'NPCC']:
-    for nerc_region in ['WECC', 'NPCC', 'RFC']:
+    for nerc_region in ['SERC', 'WECC', 'NPCC', 'RFC']:
         
         ## create/retrieve simple generator dispatch object
         try: # get shortened pickeled dictionary if generatorData has already been run for the particular year and region
