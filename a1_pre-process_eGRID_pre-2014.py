@@ -26,13 +26,14 @@ egrid_year_str = '05'
 egrid_unt = pd.read_excel(egrid_fname, 'BLR'+egrid_year_str, skiprows=5) # BLR sheet is proxy for UNT sheet
 # retrieve needed columns
 # deviations from 2016: UNITID = BLRID, no PRMVR (prime mover), FUELU1 = FUELB1, HTIAN = HTIBAN, NOXAN = NOXBAN, SO2AN = SO2BAN, CO2 = CO2BAN, HRSOP = LOADHRS
-df_unt = egrid_unt[['PNAME', 'ORISPL', 'BLRID', 'FUELB1', 'HTIBAN', 'NOXBAN', 'SO2BAN', 'CO2BAN', 'LOADHRS']]
-df_unt.columns = ['PNAME', 'ORISPL', 'UNITID', 'FUELU1', 'HTIAN', 'NOXAN', 'SO2AN', 'CO2AN', 'HRSOP']
+df_unt = egrid_unt[['PNAME', 'ORISPL', 'BLRID', 'FUELB1', 'HTIBAN', 'NOXBAN', 'SO2BAN', 'CO2BAN', 'LOADHRS', 'BLRYRONL']]
+df_unt.columns = ['PNAME', 'ORISPL', 'UNITID', 'FUELU1', 'HTIAN', 'NOXAN', 'SO2AN', 'CO2AN', 'HRSOP', 'year_online_unt']
 
-# fill in 0 in heat throughput and emissions columns with NA
-cols = ['HTIAN', 'NOXAN', 'SO2AN', 'CO2AN']
-mask = (df_unt[cols].eq(0).all(axis=1))
-df_unt.loc[mask, cols] = np.nan
+# fill in 0 in heat throughput, emissions, and year online columns with NA
+cols = ['HTIAN', 'NOXAN', 'SO2AN', 'CO2AN', 'year_online_unt']
+for col in cols:
+    mask = (df_unt[col].eq(0))
+    df_unt.loc[mask, col] = np.nan
 
 
 ## read in and process generator data
@@ -44,7 +45,44 @@ df_gen = egrid_gen[['ORISPL', 'NAMEPCAP', 'GENNTAN', 'GENYRONL', 'orispl_unit', 
 
 
 #%% add in a PRMVR column to unit data using generator data
-temp = df_gen.groupby(['ORISPL', 'FUELG1'])['PRMVR'].agg(pd.Series.mode)
+
+## match prime mover data to ORISPL unit name
+temp_df_unt = df_unt
+temp_df_unt['orispl_unit'] = temp_df_unt['ORISPL'].astype(str)+'_'+temp_df_unt['UNITID'] # construct orispl_unit column
+temp_df_unt = temp_df_unt.merge(df_gen[['orispl_unit', 'PRMVR', 'GENYRONL']], how='left', on=['orispl_unit'])
+
+## match the rest based on majority rules within ORISPL and fuel type
+# obtain majority prime mover data
+temp_majority_prmvr = df_gen # remove non-generating generators; NOTE: play with this; see if removing these are better
+temp_majority_prmvr = temp_majority_prmvr.groupby(['ORISPL', 'FUELG1'])[['PRMVR', 'GENYRONL']].agg(pd.Series.mode) # find most common PRMVR by generator + fuel
+temp_majority_prmvr = temp_majority_prmvr.reset_index(level=['ORISPL', 'FUELG1']) # make indices columns
+temp_majority_prmvr.columns = ['ORISPL', 'FUELU1', 'PRMVR', 'GENYRONL'] # rename columns to be consistent with unit (boiler) columns
+
+# add prime mover data to unit data based on ORISPL and fuel type
+temp_df_unt_leftover = temp_df_unt[temp_df_unt['PRMVR'].isna()] # get units with nan prime mover data
+temp_df_unt_leftover = temp_df_unt_leftover.drop(['PRMVR', 'GENYRONL'], axis=1) # remove old PRMVR and GENYRONL 
+temp_df_unt_leftover = temp_df_unt_leftover.merge(temp_majority_prmvr, how='left', on=['ORISPL', 'FUELU1']) # merge majority PRMVR data with remaining data
+temp_df_unt_leftover['PRMVR'] = temp_df_unt_leftover['PRMVR'].map(lambda x: np.nan if isinstance(x, np.ndarray) else x) # replace multiple PRMVR with nan
+# replace nan PRMVR from prior iteration with new PRMVR data
+temp = temp_df_unt.drop(['PRMVR', 'GENYRONL'], axis=1) # temporarily drop these columns to avoid redundancy
+temp_df_unt.loc[temp_df_unt['PRMVR'] # add only PRMVR and GENYRONL if original dataframe doesn't have them
+                .isna(), ['PRMVR', 'GENYRONL']] = temp.merge(temp_df_unt_leftover, how='left', on=['ORISPL', 'UNITID'])[['PRMVR', 'GENYRONL']]
+
+#%% match remaining to globally most common prime mover for the fuel type
+temp_majority_prmvr = df_gen # remove non-generating generators; NOTE: play with this; see if removing these are better
+temp_majority_prmvr = temp_majority_prmvr.groupby(['FUELG1'])[['PRMVR']].agg(pd.Series.mode) # find most common PRMVR by fuel
+temp_majority_prmvr['PRMVR'] = temp_majority_prmvr['PRMVR'].map(lambda x: x[0] if isinstance(x, np.ndarray) else x) # replace multiple PRMVR with first instance
+temp_majority_prmvr = temp_majority_prmvr.reset_index(level=['FUELG1']) # make indices columns
+temp_majority_prmvr.columns = ['FUELU1', 'PRMVR'] # rename columns to be consistent with unit (boiler) columns
+
+# add prime mover data to unit data based on fuel type
+temp_df_unt_leftover = temp_df_unt[temp_df_unt['PRMVR'].isna()] # get units with nan prime mover data
+temp_df_unt_leftover = temp_df_unt_leftover.drop(['PRMVR'], axis=1) # remove old PRMVR and GENYRONL 
+temp_df_unt_leftover = temp_df_unt_leftover.merge(temp_majority_prmvr, how='left', on=['FUELU1']) # merge majority PRMVR data with remaining data
+# replace nan PRMVR from prior iteration with new PRMVR data
+temp = temp_df_unt.drop(['PRMVR'], axis=1) # temporarily drop these columns to avoid redundancy
+temp_df_unt.loc[temp_df_unt['PRMVR'] # add only PRMVR and GENYRONL if original dataframe doesn't have them
+                .isna(), ['PRMVR']] = temp.merge(temp_df_unt_leftover, how='left', on=['ORISPL', 'UNITID'])[['PRMVR']]
 
 #%%
 
