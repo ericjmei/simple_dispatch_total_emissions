@@ -36,7 +36,7 @@ if __name__ == '__main__':
     fuel_commodity_prices_xlsx = 'fuel_default_prices.xlsx'
     
     # these will change with every year
-    run_year = 2018 ## specify run year
+    run_year = 2008 ## specify run year
     eia923_schedule5_xlsx = 'EIA923_Schedules_2_3_4_5_M_12_'+str(run_year)+'_Final_Revision.xlsx' # EIA 923
     # different run years will have different eGRIDs
     if run_year == 2006:
