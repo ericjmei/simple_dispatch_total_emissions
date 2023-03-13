@@ -74,7 +74,7 @@ from bisect import bisect_left
 
 class generatorData(object):
     def __init__(self, nerc, egrid_fname, input_folder_rel_path, eia923_fname, ferc714_fname='', ferc714IDs_fname='', cems_folder='', easiur_fname='', 
-                 include_easiur_damages=False, year=2017, fuel_commodity_prices_excel_dir='', hist_downtime = True, coal_min_downtime = 12, cems_validation_run=False):
+                 include_easiur_damages=False, year=2017, fuel_commodity_prices_excel_dir='', hist_downtime = True, coal_min_downtime = 12, cems_validation_run=True):
         """ 
         Translates the CEMS, eGrid, FERC, and EIA data into a dataframe for feeding into the bidStack class
         ---
@@ -102,9 +102,7 @@ class generatorData(object):
         
         # edited to parquet files upon first read - this makes the entire process much faster on subsequent runs
         self.nerc = nerc
-        egrid_year_str = str(math.floor((year / 2.0)) * 2)[2:4] #eGrid is only every other year so we have to use eGrid 2016 to help with a 2017 run, for example
-        if year < 2014: # NOTE: can probably remove this requirement. eGRID does have CEMS data, and we will only be using those anyway
-            egrid_year_str = str(14) #egrid data before 2014 does not have unit level data, so use 2014. We risk missing a few generators that retired between 'year' and 2014.
+        egrid_year_str = egrid_fname[7:9] #grab last two digits of egrid year; NOTE: file name must be XXXXXXX14XX..., etc.
         print('Reading in unit level data from eGRID...')
         try:
             self.egrid_unt = pandas.read_parquet(egrid_fname.split('.')[0]+'_UNT.parquet')
@@ -211,7 +209,7 @@ class generatorData(object):
         df_plnt.columns = ['orispl', 'state', 'ba', 'nerc', 'egrid']
        
         ## merge these egrid data together at the unit-level
-        df = df.merge(df_gen, how='left', on='orispl_unit')  
+        df = df.merge(df_gen, how='left', on='orispl_unit')
         df = df.merge(df_plnt, how='left', on='orispl')  
         df = df.merge(df_plnt_fuel, how='left', on='fuel')  
         # keep only the units in the nerc region we're analyzing
@@ -223,8 +221,7 @@ class generatorData(object):
         df['nox'] = numpy.divide(df.nox_ann,df.mwh_ann) * 907.185 #tons to kg
         
         ## analyze empty years
-        #for empty year online, look at orispl in egrid_gen instead of egrid_unit 
-        # NOTE: for 2005, may need to remove prime mover
+        #for empty year online, look at orispl in egrid_gen instead of egrid_unit # NOTE: all year_online is from eGRID_gen?? May need to re-run with eGRID_unt
         df.loc[df.year_online.isna(), 'year_online'] = (df[df.year_online.isna()][['orispl', 'prime_mover', 'fuel']] # retrieve nan year online
                                                         .merge(df_gen_long[['orispl', 'prime_mover', 'fuel', 'year_online']]
                                                                .groupby(['orispl', 'prime_mover', 'fuel'], as_index=False)
@@ -262,14 +259,12 @@ class generatorData(object):
             
             # obtain hourly CEMS data for state and year
             os.chdir("./"+state) # change to state's directory
-            df_cems_add = pandas.read_parquet('CEMS_hourly_'+state+'_'+str(self.year)+'.parquet')
+            df_cems_add = pandas.read_parquet('CEMS_hourly_local_'+state+'_'+str(self.year)+'.parquet')
             os.chdir("..") # change to upstream directory
             
             # split date time columns
-            to_split = df_cems_add["operating_datetime_utc"] # datetime IN UTC - check that simple dispatch operates this way?
-            to_split = to_split.tolist()
-            date = [x.strftime("%m/%d/%Y") for x in to_split] # retrieve mm/dd/yy date string
-            hour = [int(x.strftime("%H")) for x in to_split] # retrieve hour string
+            date = df_cems_add["operating_datetime"].dt.strftime("%m/%d/%Y") # retrieve mm/dd/yy date string
+            hour = df_cems_add["operating_datetime"].dt.strftime("%H") # retrieve hour string
             timeData_toAdd = pandas.DataFrame({'date': date,
                                            'hour': hour}) # create new parallel dataframe with date and hour
             df_cems_add = pandas.concat([df_cems_add, timeData_toAdd], axis=1) # concat to dataframe
@@ -318,14 +313,16 @@ class generatorData(object):
         for t in numpy.arange(52)+1: # add column to relevant rows
             start = (datetime.datetime.strptime(str(self.year) + '-01-01', '%Y-%m-%d') + datetime.timedelta(days=7.05*(t-1)-1)).strftime('%Y-%m-%d') 
             end = (datetime.datetime.strptime(str(self.year) + '-01-01', '%Y-%m-%d') + datetime.timedelta(days=7.05*(t)-1)).strftime('%Y-%m-%d') 
+            if (self.year % 4 == 0) & (t == 52): # account for leap years, add in extra day in last week
+                end = (datetime.datetime.strptime(str(self.year) + '-01-01', '%Y-%m-%d') + datetime.timedelta(days=7.05*(t))).strftime('%Y-%m-%d') 
             start_monthday = float(start[0:4])*10000 + float(start[5:7])*100 + float(start[8:])
             end_monthday = float(end[0:4])*10000 + float(end[5:7])*100 + float(end[8:])
             #slice the data for the days corresponding to the time series period, t
             df_orispl_unit.loc[(df_orispl_unit.monthday >= start_monthday) & (df_orispl_unit.monthday < end_monthday), 't'] = t          
         
         ## make columns for every t week and each variable
-        #remove outlier emissions and heat rates. These happen at hours where a generator's output is very low (e.g. less than 10 MWh). To remove these, we will remove any datapoints where mwh < 10.0 and heat_rate < 30.0 (0.5% percentiles of the 2014 TRE data).
-        # NOTE maybe should put print statement here for debugging purposes
+        #remove outlier emissions and heat rates. These happen at hours where a generator's output is very low (e.g. less than 10 MWh). 
+        #To remove these, we will remove any datapoints where mwh < 10.0 and heat_rate < 30.0 (0.5% percentiles of the 2014 TRE data).
         percRemoved = ((df_orispl_unit.shape[0] - sum((df_orispl_unit.mwh >= 10.0) & (df_orispl_unit.heat_rate <= 30.0)))
                        *100/df_orispl_unit.shape[0]) # percent of data that are outliers and will be removed
         print(str(percRemoved)+"% data removed from "+self.nerc+" because <10 Mwh or <30 mmbtu")
@@ -435,7 +432,7 @@ class generatorData(object):
         # NOTE: NEED TO CHANGE THESE FOR EACH YEAR
         df_orispl_unit.loc[df_orispl_unit.fuel.isna(), ['fuel', 'fuel_type']] = ['ng', 'gas']
         df_orispl_unit.loc[df_orispl_unit.prime_mover.isna(), 'prime_mover'] = 'ct'
-        df_orispl_unit.loc[df_orispl_unit.year_online.isna(), 'year_online'] = 2017
+        df_orispl_unit.loc[df_orispl_unit.year_online.isna(), 'year_online'] = self.year
         #also change 'og' to fuel_type 'gas' instead of 'ofsl' (other fossil fuel)
         df_orispl_unit.loc[df_orispl_unit.fuel=='og', ['fuel', 'fuel_type']] = ['og', 'gas']
         df_orispl_unit.fillna(0.0, inplace=True)
@@ -606,7 +603,8 @@ class generatorData(object):
                 multiplier = 1.00
                 #if refined coal, use subbitaneous prices * 1.15
                 if f =='rc':
-                    orispl_prices_filled = orispl_prices[(orispl_prices.fuel=='sub') & (orispl_prices[1] != 0.0)].dropna().drop_duplicates(subset='orispl', keep='first').sort_values('quantity', ascending=0)
+                    orispl_prices_filled = (orispl_prices[(orispl_prices.fuel=='sub') & (orispl_prices[1] != 0.0)].dropna()
+                                            .drop_duplicates(subset='orispl', keep='first').sort_values('quantity', ascending=0))
                     multiplier = 1.1
                 loop = 0
                 loop_len = len(orispl_prices_filled) - 1
@@ -648,12 +646,18 @@ class generatorData(object):
             else:
                 test['fuel_price'+ str(c)] = test['fuel_price'+str(c-1)] # otherwise, keep price the same for week column
         orispl_prices = test.copy(deep=True)
-        #now we add in the weekly fuel commodity prices
+        
+        #now we add in the weekly fuel commodity prices ##NOTE: removed this to run 2018 - need to know how much data this affects
         prices_fuel_commodity = self.fuel_commodity_prices # NOTE: may need to find suitable replacement for fuel commodity prices
         f_array = orispl_prices[orispl_prices['fuel_price1'].isna()].fuel.unique() # identify any remaining fuels with nan prices
+        percNan = ((orispl_prices[orispl_prices['fuel_price1'].isna()].shape[0])
+                       *100/orispl_prices.shape[0]) # percent of data that are outliers and will be removed
+        print(str(percNan)+"% generators from "+self.nerc+" have no EIA fuel price data")
+        print("these fuels are "+', '.join(f_array))
         for f in f_array:
             l = len(orispl_prices.loc[orispl_prices.fuel==f, orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel'])])
             orispl_prices.loc[orispl_prices.fuel==f, orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel'])] = scipy.tile(prices_fuel_commodity[f], (l,1)) # fill with commodity prices
+        
         #now we have orispl_prices, which has a weekly fuel price for each orispl_unit based mostly on EIA923 data with some commodity, national-level data from EIA to supplement
         #now merge the fuel price columns into self.df
         orispl_prices.drop(['orispl', 'fuel'], axis=1, inplace=True)
@@ -1597,13 +1601,14 @@ class bidStack(object):
         else:
             print('***Error: enter valid argument for plot_type')
             pass
-        matplotlib.pylab.ylim(ymax=y_data.quantile(0.98)) #take the 98th percentile for the y limits.
+        matplotlib.pylab.ylim(ymax=y_data.quantile(0.99)) #take the 98th percentile for the y limits.
         #ax.set_xlim(bs.hist_dispatch.demand.quantile(0.025)*0.001, bs.hist_dispatch.demand.quantile(0.975)*0.001) #take the 2.5th and 97.5th percentiles for the x limits
         ax.set_xlim(0, self.hist_dispatch.demand.quantile(0.975)*0.001) #take 0 and the 97.5th percentiles for the x limits
         if df_column == 'gen_cost':
             if production_cost_only:
-                ax.set_ylim(0, 65)
-                ax.set_yticks((0, 15, 30, 45, 60))
+                # ax.set_ylim(0, 65)
+                # ax.set_yticks((0, 15, 30, 45, 60))
+                print() # NOTE: placeholder for plotting code
             if not production_cost_only:
                 ax.set_ylim(0, 160)
                 ax.set_yticks((0, 30, 60, 90, 120, 150))    
@@ -1860,7 +1865,8 @@ class dispatch(object):
         and then calculate the dispatch for the slice of time defined by the fuel price multipliers. 
         This way, instead of calculating the dispatch over the whole year, 
         we can calculate it in chunks of time (e.g. weeks) where each chunk of time has different fuel prices for the generators. 
-        Right now the only thing changing per chunk of time is the fuel prices based on trends in national commodity prices. Future versions might try and do regional price trends and add things like maintenance downtime or other seasonal factors.
+        Right now the only thing changing per chunk of time is the fuel prices based on trends in national commodity prices. 
+        Future versions might try and do regional price trends and add things like maintenance downtime or other seasonal factors.
         ---
         fills in the self.df dataframe one time slice at a time
         """
@@ -1874,7 +1880,9 @@ class dispatch(object):
                 self.bs.updateTime(t)
                 #calculate the dispatch for the time slice over which the updated fuel prices are relevant
                 start = (datetime.datetime.strptime(str(self.bs.year) + '-01-01', '%Y-%m-%d') + datetime.timedelta(days=7.05*(t-1)-1)).strftime('%Y-%m-%d') 
-                end = (datetime.datetime.strptime(str(self.bs.year) + '-01-01', '%Y-%m-%d') + datetime.timedelta(days=7.05*(t)-1)).strftime('%Y-%m-%d') 
+                end = (datetime.datetime.strptime(str(self.bs.year) + '-01-01', '%Y-%m-%d') + datetime.timedelta(days=7.05*(t)-1)).strftime('%Y-%m-%d')
+                if (self.year % 4 == 0) & (t == 52): # account for leap years, add in extra day in last week
+                    end = (datetime.datetime.strptime(str(self.year) + '-01-01', '%Y-%m-%d') + datetime.timedelta(days=7.05*(t))).strftime('%Y-%m-%d') 
                 #note that calcDispatchSlice updates self.df, so there is no need to do it in this calcDispatchAll function
                 self.calcDispatchSlice(self.bs, start_date=start ,end_date=end)
                 #coal minimum downtime
