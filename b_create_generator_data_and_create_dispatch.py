@@ -128,9 +128,8 @@ if __name__ == '__main__':
         # change path to simple dispatch output data folder
         os.chdir(base_dname)
         os.chdir("../Data/Simple Dispatch Outputs") # where to access output data relative to code folder
-        if not os.path.exists('simple_dispatch_'+nerc_region+'_'+str(run_year)+'.csv'): #if you've already run and saved the dispatch, skip this step
-            #run the dispatch object
-            dp = dispatch(bs, gd_short["demand_data"], time_array=np.arange(52)+1) #set up the object         
-            dp.calcDispatchAll() #function that solves the dispatch for each time period in time_array (default for each week of the year)
-            #save dispatch results 
-            dp.df.to_csv('simple_dispatch_'+nerc_region+'_'+str(run_year)+'.csv', index=False)
+        #run the dispatch object
+        dp = dispatch(bs, gd_short["demand_data"], time_array=np.arange(52)+1) #set up the object         
+        dp.calcDispatchAll() #function that solves the dispatch for each time period in time_array (default for each week of the year)
+        #save dispatch results 
+        dp.df.to_csv('simple_dispatch_'+nerc_region+'_'+str(run_year)+'.csv', index=False)
