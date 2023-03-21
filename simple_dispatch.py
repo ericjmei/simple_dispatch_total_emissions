@@ -574,7 +574,7 @@ class generatorData(object):
 
     def addGenMinOut(self):
         """ 
-        Adds fuel price and vom costs to the generator dataframe 'self.df'
+        Adds weekly minimum output capacity to the generator dataframe 'self.df' 
         ---
         """
         df = self.df.copy(deep=True)
@@ -587,8 +587,15 @@ class generatorData(object):
         min_out_oilgt = min_out_nggt #assume the same as gas turbine
         min_out_nuc = 0.5
         min_out_bio = 0.4
-        df['min_out_multiplier'] = scipy.where(df.fuel_type=='oil', scipy.where(df.prime_mover=='st', min_out_oilst, min_out_oilgt), scipy.where(df.fuel_type=='biomass',min_out_bio, scipy.where(df.fuel_type=='coal',min_out_coal, scipy.where(df.fuel_type=='nuclear',min_out_nuc, scipy.where(df.fuel_type=='gas', scipy.where(df.prime_mover=='gt', min_out_nggt, scipy.where(df.prime_mover=='st', min_out_ngst, min_out_ngcc)), 0.10)))))
-        df['min_out'] = df.mw * df.min_out_multiplier
+        df['min_out_multiplier'] = scipy.where(df.fuel_type=='oil', 
+                                               scipy.where(df.prime_mover=='st', min_out_oilst, min_out_oilgt), 
+                                               scipy.where(df.fuel_type=='biomass',min_out_bio, 
+                                                           scipy.where(df.fuel_type=='coal',min_out_coal, 
+                                                                       scipy.where(df.fuel_type=='nuclear',min_out_nuc, 
+                                                                                   scipy.where(df.fuel_type=='gas', 
+                                                                                               scipy.where(df.prime_mover=='gt', min_out_nggt, 
+                                                                                                           scipy.where(df.prime_mover=='st', min_out_ngst, min_out_ngcc)), 0.10))))) # assigns above min out multiplier to specific fuels types and prime movers. 0.1 for oil
+        df['min_out'] = df.mw * df.min_out_multiplier # minimum capacity is max capacity in year multiplied by multiplier
         self.df = df          
         
         
@@ -928,25 +935,29 @@ class bidStack(object):
         df['co2_cost'] = df['co2' + str(self.time)] * self.co2_dol_per_kg 
         df['so2_cost'] = df['so2' + str(self.time)] * self.so2_dol_per_kg 
         df['nox_cost'] = df['nox' + str(self.time)] * self.nox_dol_per_kg 
-        df['gen_cost'] = scipy.maximum(0.01, df.fuel_cost + df.co2_cost + df.so2_cost + df.nox_cost + df.vom)
-        #add a zero generator so that the bid stack goes all the way down to zero. This is important for calculating information for the marginal generator when the marginal generator is the first one in the bid stack.
-        df['dmg_easiur'] = df['dmg' + str(self.time)]
-        #if self.initialization:
-        df = df.append(df.loc[0]*0) 
-        df = df.append(df.iloc[-1])
-        #self.initialization = False
+        with scipy.errstate(all='ignore'): # to suppress warnings
+            df['gen_cost'] = scipy.maximum(0.01, df.fuel_cost + df.co2_cost + df.so2_cost + df.nox_cost + df.vom)
+        # #add a zero generator so that the bid stack goes all the way down to zero. This is important for calculating information for the 
+        # marginal generator when the marginal generator is the first one in the bid stack.
+        # df['dmg_easiur'] = df['dmg' + str(self.time)] # NOTE: EASIUR commented out because I (Eric) don't need it
+        if self.initialization:
+            dtype_dict = df.dtypes.to_dict() # to preserve data types
+            empty_row = df.loc[0]*0 # creates empty row
+            df = pandas.concat([df, empty_row.to_frame().T, empty_row.to_frame().T], axis=0, ignore_index=True) # appends 2 empty rows to dataframe
+            df = df.astype(dtype_dict) # re-casts columns to same types as original dataframe
+            self.initialization = False
         df.sort_values('gen_cost', inplace=True)
         #move coal_0 and ngcc_0 to the front of the merit order regardless of their gen cost
         coal_0_ind = df[df.orispl_unit=='coal_0'].index[0]
         ngcc_0_ind = df[df.orispl_unit=='ngcc_0'].index[0]
         df = pandas.concat([df.iloc[[0],:], df[df.orispl_unit=='coal_0'], df[df.orispl_unit=='ngcc_0'], df.drop([0, coal_0_ind, ngcc_0_ind], axis=0)], axis=0)
-        df.reset_index(drop=True, inplace=True)
-        df['demand'] = df['mw' + str(self.time)].cumsum()	
-        df.loc[len(df)-1, 'demand'] = df.loc[len(df)-1, 'demand'] + 1000000 #creates a very large generator at the end of the merit order so that demand cannot be greater than supply
-        df['f'] = df['demand']
-        df['s'] = scipy.append(0, scipy.array(df.f[0:-1]))
-        df['a'] = scipy.maximum(df.s - df.min_out*(1/0.10), 1.0)       
-        #add a very large demand for the last row
+        df.reset_index(drop=True, inplace=True) # end result is that 5 rows in beginning of dataframe are null (0, coal, ng, 0, 0)
+        df['demand'] = df['mw' + str(self.time)].cumsum() # cumulative function for demand, calculated by historical mw
+        # NOTE: this actually sets the last generator as a really large demand, not create it
+        df.loc[len(df)-1, 'demand'] = df.loc[len(df)-1, 'demand'] + 1000000 
+        df['f'] = df['demand'] # copy of demand column
+        df['s'] = scipy.append(0, scipy.array(df.f[0:-1])) # column of cumulative demand of all prior units in merit order
+        df['a'] = scipy.maximum(df.s - df.min_out*10.0, 1.0) # remaining cumulative demand after unit's base capacity removed*10 (less the minimum capacity)
         self.df = df  
         
         
@@ -981,7 +992,9 @@ class bidStack(object):
 	
 					
     def createTotalInterpolationFunctions(self):
-        """ Creates interpolation functions for the total data (i.e. total cost, total emissions, etc.) depending on total demand. Then the returnTotalCost, returnTotal###, ..., functions use these interpolations rather than querying the dataframes as in previous versions. This reduces solve time by ~90x.
+        """ Creates interpolation functions for the total data (i.e. total cost, total emissions, etc.) depending on total demand. 
+        Then the returnTotalCost, returnTotal###, ..., functions use these interpolations rather than querying the dataframes as in previous versions. 
+        This reduces solve time by ~90x. Dataframe is sorted in merit order prior to input into the functions
         """       
         test = self.df.copy()      
         #cost
@@ -989,6 +1002,7 @@ class bidStack(object):
         #emissions and health damages
         self.f_totalCO2 = scipy.interpolate.interp1d(test.demand, (test['mw' + str(self.time)] * test['co2' + str(self.time)]).cumsum())
         self.f_totalSO2 = scipy.interpolate.interp1d(test.demand, (test['mw' + str(self.time)] * test['so2' + str(self.time)]).cumsum())
+        self.totalSO2 = (test['mw' + str(self.time)] * test['so2' + str(self.time)]).cumsum() # TEMPORARY for debugging interpolation function
         self.f_totalNOX = scipy.interpolate.interp1d(test.demand, (test['mw' + str(self.time)] * test['nox' + str(self.time)]).cumsum())
         self.f_totalDmg = scipy.interpolate.interp1d(test.demand, (test['mw' + str(self.time)] * test['dmg' + str(self.time)]).cumsum())
         #for coal units only
@@ -1129,14 +1143,33 @@ class bidStack(object):
         if self.include_min_output:
             
             #total production cost
-            df['full_gen_cost_tot_base'] = 0.1*df.a.apply(self.returnTotalCost) + 0.9*df.s.apply(self.returnTotalCost) + df.s.apply(self.returnMarginalGenerator, args=('gen_cost',)) * df.s.apply(self.returnMarginalGenerator, args=('min_out',)) #calculate the base production cost [$]
-            df['full_gen_cost_tot_marg'] = ((df.s.apply(self.returnTotalCost) - df.a.apply(self.returnTotalCost)) / (df.s-df.a) * (df.min_out/(df.f-df.s)) + df.s.apply(self.returnMarginalGenerator, args=('gen_cost',)) * (1 -(df.min_out/(df.f-df.s)))).fillna(0.0) #calculate the marginal base production cost [$/MWh]
-            
+            df['full_gen_cost_tot_base'] = (0.1*df.a.apply(self.returnTotalCost) + 0.9*df.s.apply(self.returnTotalCost) 
+                                            + df.s.apply(self.returnMarginalGenerator, args=('gen_cost',)) 
+                                            * df.s.apply(self.returnMarginalGenerator, args=('min_out',))) #calculate the base production cost [$]
+            df['full_gen_cost_tot_marg'] = (((df.s.apply(self.returnTotalCost) - df.a.apply(self.returnTotalCost)) 
+                                             / (df.s-df.a) * (df.min_out/(df.f-df.s)) + df.s.apply(self.returnMarginalGenerator, args=('gen_cost',)) 
+                                             * (1 -(df.min_out/(df.f-df.s)))).fillna(0.0)) #calculate the marginal base production cost [$/MWh]
+            # FOR DEBUGGING: tempDF = df.loc[:][["f",  "s", "min_out", "a", "full_gen_cost_tot_base", "full_gen_cost_tot_marg"]]
             #emissions
             for e in ['co2', 'so2', 'nox']:
-                df['full_' + e + '_base'] = 0.1*df.a.apply(self.returnTotalEmissions, args=(e,)) + 0.9*df.s.apply(self.returnTotalEmissions, args=(e,)) + df.s.apply(self.returnMarginalGenerator, args=(e,)) * df.s.apply(self.returnMarginalGenerator, args=('min_out',)) #calculate the base emissions [kg]
-                #scipy.multiply(MEF of normal generation, weight of normal genearation) + scipy.multiply(MEF of mdt_reserves, weight of mdt_reserves) where MEF of normal generation is the calculation that happens without accounting for mdt, weight of normal generation is ((f-s) / ((f-s)) + mdt_reserves) and MEF of mdt_reserves is total_value_mdt_emissions / total_mw_mdt_reserves
-                df['full_' + e + '_marg'] = scipy.multiply(  ((df.s.apply(self.returnTotalEmissions, args=(e,)) - df.a.apply(self.returnTotalEmissions, args=(e,))) / (df.s-df.a) * (df.min_out/(df.f-df.s)) + df.s.apply(self.returnMarginalGenerator, args=(e,)) * (1 -(df.min_out/(df.f-df.s)))).fillna(0.0)  ,    weight_marginal_unit  ) + scipy.multiply(  scipy.divide(scipy.maximum(0, - (df.f.apply(self.returnTotalEmissions_Coal, args=(e,)) - self.returnTotalEmissions_Coal(self.coal_mdt_demand_threshold, e)))  ,  scipy.maximum(0, - (df.f.apply(self.returnTotalFuelMix, args=(('is_coal'),)) - self.returnTotalFuelMix(self.coal_mdt_demand_threshold, 'is_coal')))).fillna(0.0).replace(scipy.inf, 0.0)  ,  weight_mindowntime_units  )
+                # base emissions here is not meant to match base calculations when not including min_output, NOTE: not sure where this equation comes from
+                df['full_' + e + '_base'] = (0.1*df.a.apply(self.returnTotalEmissions, args=(e,)) + 
+                                             0.9*df.s.apply(self.returnTotalEmissions, args=(e,)) + df.s.apply(self.returnMarginalGenerator, args=(e,)) 
+                                             * df.s.apply(self.returnMarginalGenerator, args=('min_out',))) #calculate the base emissions [kg]
+                #scipy.multiply(MEF of normal generation, weight of normal genearation) + 
+                #scipy.multiply(MEF of mdt_reserves, weight of mdt_reserves) where MEF of normal generation 
+                #is the calculation that happens without accounting for mdt, weight of normal generation is ((f-s) / ((f-s)) + mdt_reserves) 
+                #and MEF of mdt_reserves is total_value_mdt_emissions / total_mw_mdt_reserves
+                df['full_' + e + '_marg'] = (scipy.multiply(((df.s.apply(self.returnTotalEmissions, args=(e,)) - 
+                                                              df.a.apply(self.returnTotalEmissions, args=(e,))) / (df.s-df.a) * 
+                                                             (df.min_out/(df.f-df.s)) + df.s.apply(self.returnMarginalGenerator, args=(e,)) * 
+                                                             (1 -(df.min_out/(df.f-df.s)))).fillna(0.0), weight_marginal_unit) # emissions of minimum downtime units
+                                             + scipy.multiply(scipy.divide(
+                                                 scipy.maximum(0, - (df.f.apply(self.returnTotalEmissions_Coal, args=(e,)) 
+                                                                     - self.returnTotalEmissions_Coal(self.coal_mdt_demand_threshold, e))),  
+                                                 scipy.maximum(0, - (df.f.apply(self.returnTotalFuelMix, args=(('is_coal'),)) 
+                                                                     - self.returnTotalFuelMix(self.coal_mdt_demand_threshold, 'is_coal'))))
+                                                 .fillna(0.0).replace(scipy.inf, 0.0),  weight_mindowntime_units))
             
             #emissions damages
             df['full_dmg_easiur_base'] = 0.1*df.a.apply(self.returnTotalEasiurDamages) + 0.9*df.s.apply(self.returnTotalEasiurDamages) + df.s.apply(self.returnMarginalGenerator, args=('dmg_easiur',)) * df.s.apply(self.returnMarginalGenerator, args=('min_out',)) #calculate the base easiur damages [$]
@@ -1156,7 +1189,17 @@ class bidStack(object):
                 df['full_' + fl + '_consumption_base'] = 0.1*df.a.apply(self.returnTotalFuelConsumption, args=(('is_'+fl),)) + 0.9*df.s.apply(self.returnTotalFuelConsumption, args=(('is_'+fl),)) + self.df['is_'+fl] * df.s.apply(self.returnMarginalGenerator, args=('heat_rate',)) * df.s.apply(self.returnMarginalGenerator, args=('min_out',)) #calculate the base fuel consumption [mmBtu]
                 #scipy.multiply(mmbtu/mw of normal generation, weight of normal genearation) + scipy.multiply(mmbtu/mw of mdt_reserves, weight of mdt_reserves) where mmbtu/mw of normal generation is the calculation that happens without accounting for mdt, weight of normal generation is ((f-s) / ((f-s)) + mdt_reserves) and mmbtu/mw of mdt_reserves is total_value_mdt_reserves / total_mw_mdt_reserves
                 fuel_multiplier = scipy.where(fl=='coal', 1.0, 0.0)
-                df['full_' + fl + '_consumption_marg'] = scipy.multiply(  ((df.s.apply(self.returnTotalFuelConsumption, args=('is_'+fl,)) - df.a.apply(self.returnTotalFuelConsumption, args=('is_'+fl,))) / (df.s-df.a) * (df.min_out/(df.f-df.s)) + df.s.apply(self.returnMarginalGenerator, args=('is_'+fl,)) * df.s.apply(self.returnMarginalGenerator, args=('heat_rate',)) * (1 -(df.min_out/(df.f-df.s)))).fillna(0.0)  ,  weight_marginal_unit  )  +  scipy.multiply(  scipy.divide(scipy.maximum(0, - (df.f.apply(self.returnTotalFuelConsumption, args=(('is_coal'),)) - self.returnTotalFuelConsumption(self.coal_mdt_demand_threshold, 'is_coal'))), scipy.maximum(0, - (df.f.apply(self.returnTotalFuelMix, args=(('is_coal'),)) - self.returnTotalFuelMix(self.coal_mdt_demand_threshold, 'is_coal')))).fillna(0.0).replace(scipy.inf, 0.0) * fuel_multiplier ,  weight_mindowntime_units  )         
+                df['full_' + fl + '_consumption_marg'] = (scipy.multiply(((df.s.apply(self.returnTotalFuelConsumption, args=('is_'+fl,)) 
+                                                                           - df.a.apply(self.returnTotalFuelConsumption, args=('is_'+fl,))) / (df.s-df.a) 
+                                                                          * (df.min_out/(df.f-df.s)) + df.s.apply(self.returnMarginalGenerator, args=('is_'+fl,))
+                                                                          * df.s.apply(self.returnMarginalGenerator, args=('heat_rate',)) 
+                                                                          * (1 -(df.min_out/(df.f-df.s)))).fillna(0.0),  weight_marginal_unit  )  
+                                                          +  scipy.multiply(scipy.divide(
+                                                              scipy.maximum(0, - (df.f.apply(self.returnTotalFuelConsumption, args=(('is_coal'),)) 
+                                                                                  - self.returnTotalFuelConsumption(self.coal_mdt_demand_threshold, 'is_coal'))),
+                                                              scipy.maximum(0, - (df.f.apply(self.returnTotalFuelMix, args=(('is_coal'),)) 
+                                                                                  - self.returnTotalFuelMix(self.coal_mdt_demand_threshold, 'is_coal'))))
+                                                              .fillna(0.0).replace(scipy.inf, 0.0) * fuel_multiplier,  weight_mindowntime_units))         
         
         #EXCLUDING MIN OUTPUT
         if not self.include_min_output:
@@ -1165,6 +1208,7 @@ class bidStack(object):
             df['full_gen_cost_tot_marg'] = df.s.apply(self.returnMarginalGenerator, args=('gen_cost',)) #calculate the marginal production cost, which is now just the generation cost of the marginal generator [$/MWh]
             #emissions
             for e in ['co2', 'so2', 'nox']:
+                # full_base will differ depending on if using min_output because marginal plant will not automatically have some min_output capacity when fired
                 df['full_' + e + '_base'] = df.s.apply(self.returnTotalEmissions, args=(e,)) #calculate the base emissions, which is now the full load emissions of the generators in the merit order below the marginal unit [kg]
                 df['full_' + e + '_marg'] = scipy.multiply(  df.s.apply(self.returnMarginalGenerator, args=(e,))  ,   weight_marginal_unit  ) + scipy.multiply(  scipy.divide(scipy.maximum(0, - (df.f.apply(self.returnTotalEmissions_Coal, args=(e,)) - self.returnTotalEmissions_Coal(self.coal_mdt_demand_threshold, e)))  ,  scipy.maximum(0, - (df.f.apply(self.returnTotalFuelMix, args=(('is_coal'),)) - self.returnTotalFuelMix(self.coal_mdt_demand_threshold, 'is_coal')))).fillna(0.0).replace(scipy.inf, 0.0)  ,  weight_mindowntime_units  )
             #emissions damages
@@ -1196,6 +1240,10 @@ class bidStack(object):
 
     def createTotalInterpolationFunctionsFull(self):
         """ Creates interpolation functions for the full total data (i.e. total cost, total emissions, etc.) depending on total demand.
+        general form of equations:
+            x is cumulative demand (test.demand) in order of the merit order (price order)
+            y is base emissions/cost (test['full_xxx_base']; aka emissions from prior units) 
+                + marginal emissions (cumulative demand less demand from prior units) * emissions rate from marginal unit
         """       
         test = self.df.copy()      
         #cost
