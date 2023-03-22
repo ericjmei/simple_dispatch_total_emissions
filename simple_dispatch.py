@@ -1,7 +1,8 @@
 # simple_dispatch
 # Thomas Deetjen
+# edits v28 and later by Eric Mei
+# last edited: 2023-03-22
 # v_21
-# last edited: 2019-07-02
 # class "generatorData" turns CEMS, eGrid, FERC, and EIA data into a cleaned up dataframe for feeding into a "bidStack" object
 # class "bidStack" creates a merit order curve from the generator fleet information created by the "generatorData" class
 # class "dispatch" uses the "bidStack" object to choose which power plants should be operating during each time period to meet a demand time-series input
@@ -37,7 +38,8 @@
 # the last 2 updates combined let us generate a TRE bidStack in 6.5 seconds instead of 50 seconds = ~8x faster. It reduced TRE dispatch from ~60 minutes to ~7 minutes.
 # v25:
 # updated bs.returnFullTotalValue to be 15x faster using similar methods as v24. This has a tiny amount of error associated with it 
-#(less than 0.5% annually for most output variables). If we use the old returnFullTotalValue function with the new returnFullMarginalValue, the error goes to zero, but the solve time increases from 2.5 minutes to 4 minutes. The error is small enough that I will leave as is, but we can always remove it later if something in the results seems strange. 
+#(less than 0.5% annually for most output variables). If we use the old returnFullTotalValue function with the new returnFullMarginalValue, the error goes to zero, but the solve time increases from 2.5 minutes to 4 minutes. 
+# The error is small enough that I will leave as is, but we can always remove it later if something in the results seems strange. 
 #Perhaps the linear interpolation is not quite accurate and there is something more nuanced going on. Or maybe I wasn't previously calculating it correctly. 
 # updated bs.returnFullMarginalValue to be 5x faster using similar methods as v24. This reduced dispatch solve time by another 60%, brining the TRE dispatch down to 2.5 minutes. 
 # v26:
@@ -56,6 +58,8 @@
 #   'rc' fuel price is now calculated as the price for 'sub' X 1.11. Refined coal has some additional processing that makes it more expensive.
 #   'ng' fuel missing price data is populated according to purchase type (contract, spot, or tolling) where tolling prices (which EIA923 has no information on) are calculated as contract prices. Any nan prices (plants in CEMS that aren't in EIA923) are populated with spot, contract, and tolling prices
 #   cleanGeneratorData now derates CHP plants according to their electricity : gross ratio
+# v28:
+# added capability to subset total emissions from groups of states within the NERC regions simulated
 
 
 
@@ -946,7 +950,7 @@ class generatorData(object):
 
 
 class bidStack(object):
-    def __init__(self, gen_data_short, co2_dol_per_kg=0.0, so2_dol_per_kg=0.0, nox_dol_per_kg=0.0, 
+    def __init__(self, gen_data_short, states_to_subset = [], co2_dol_per_kg=0.0, so2_dol_per_kg=0.0, nox_dol_per_kg=0.0, 
                  coal_dol_per_mmbtu=0.0, coal_capacity_derate = 0.0, time=1, dropNucHydroGeo=False, 
                  include_min_output=True, initialization=True, coal_mdt_demand_threshold = 0.0, mdt_weight=0.50):
         """ 
@@ -954,6 +958,7 @@ class bidStack(object):
         2) Calculate the generation cost for each generator and sort the generators by generation cost. Default emissions prices [$/kg] are 0.00 for all emissions.
         ---
         gen_data_short : a generatorData object
+        states_to_subset : list of 2-letter capital abbreviations of all states in which emissions will be subset
         co2 / so2 / nox_dol_per_kg : a tax on each amount of emissions produced by each generator. Impacts each generator's generation cost
         coal_dol_per_mmbtu : a tax (+) or subsidy (-) on coal fuel prices in $/mmbtu. Impacts each generator's generation cost
         coal_capacity_derate : fraction that we want to derate all coal capacity (e.g. 0.20 mulutiplies each coal plant's capacity by (1-0.20))
@@ -970,6 +975,7 @@ class bidStack(object):
         self.mdt_weight = mdt_weight
         self.df_0 = gen_data_short["df"] # all generators, their attributes, and their weekly heat throughputs, emission rates, capacity, and fuel prices
         self.df = self.df_0.copy(deep=True)
+        self.states_to_subset = states_to_subset # states to subset from overall run
         self.co2_dol_per_kg = co2_dol_per_kg
         self.so2_dol_per_kg = so2_dol_per_kg
         self.nox_dol_per_kg = nox_dol_per_kg
@@ -1013,7 +1019,7 @@ class bidStack(object):
         ---
         """
         self.calcGenCost()  # calculates average generator cost based on VOM, fuel price, and any taxes on emissions
-        self.createTotalInterpolationFunctions() # creates interpolation functions (not quite sure what this does)
+        self.createTotalInterpolationFunctions() # creates interpolation functions 
         self.createMarginalPiecewise() # creates dataframe with original demand and shifted demand
         self.calcFullMeritOrder() # calculates base and marginal price, fuel use, and emissions for each unit
         self.createMarginalPiecewise() # do this again with FullMeritOrder so that it includes the new full_####_marg columns
@@ -1386,10 +1392,64 @@ class bidStack(object):
                                                               .fillna(0.0).replace(scipy.inf, 0.0) * fuel_multiplier ,  weight_mindowntime_units))
         #update the master dataframe df
         self.df = df
+        
+        ## if subsetting, prepare subset dataframe
+        if self.states_to_subset != []: # check if there are states in the list
+            df_subset = df.copy(deep=True) # create a copy to manipulate
+            
+            ## steps to subset; the goal is to create a step function that is constant between demand from non-subset units
+            ## and increases for demand from subset units.
+            ## in the existing code, base X + marginal X*(max capacity) != base X of n+1 unit
+            ## from prior testing, these differences are slight (<0.1%) and will not significantly impact results
+            ## but we follow these steps to maintain a flat slope in the demand between units we are trying to subset
+            # 1. set X-marg to 0 for non-subset units
+            # 2. create a new column of X-base (X-base-temp) shifted down one (move to n+1 row)
+            # 3. set X-base-temp equal to X-base - X-base-temp
+            # 4. set X-base-temp to 0 for rows not after subset unit rows
+            # 5. new X-base (X-base-new) = cumulative sum of X-base-temp (cumsum) for subset units
+            # 6. drop X-base-temp
+            # 7. drop non-subset units that are not directly before subset units
+            # 8. set unit directly following subsetted unit and is not itself a subsetted unit to have base X (n) = base X (n-1) + marginal X * marginal demand (n-1)
 
+            mask_of_subset_units = df_subset["state"].isin(self.states_to_subset) # subset units in states we want 
+            for e in ['co2', 'so2', 'nox']: # loop through emissions columns
+                # 1. set X-marg to 0 for non-subset units
+                df_subset.loc[~mask_of_subset_units, 'full_' + e + '_marg'] = 0 
+                # 2. create a new column of X-base (X-base-temp) shifted down one (move to n+1 row)
+                df_subset['full_' + e + '_base_temp'] = df_subset['full_' + e + '_base'].shift(1).fillna(0) 
+                # 3. set X-base-temp equal to X-base - X-base-temp
+                df_subset['full_' + e + '_base_temp'] = df_subset['full_' + e + '_base'] - df_subset['full_' + e + '_base_temp'] 
+                # 4. set X-base-temp to 0 for rows not after subset unit rows
+                temp_mask = mask_of_subset_units.shift(1).fillna(False) # rows directly after subset unit rows
+                df_subset.loc[~temp_mask, 'full_' + e + '_base_temp'] = 0
+                # 5. new X-base (X-base-new) = cumulative sum of X-base-temp (cumsum)
+                df_subset['full_' + e + '_base'] = df_subset['full_' + e + '_base_temp'].cumsum() 
+                # 6. drop X-base-temp
+                df_subset = df_subset.drop(['full_' + e + '_base_temp'], axis=1) 
+
+            # 7. drop non-subset units that are not directly before subset units
+            temp_mask = mask_of_subset_units.shift(-1).fillna(False) # mask for units before subsetted units
+            temp_mask = temp_mask | mask_of_subset_units # mask for units before subsetted units or subsetted units
+            df_subset = pandas.concat([df_subset.loc[[1, 2], :], # preserve first 2 null rows for edge cases 
+                                df_subset.drop(df_subset[~temp_mask].index, axis=0)], axis=0) # drop rest of un-needed rows
+            mask_of_subset_units = df_subset["state"].isin(self.states_to_subset) # re-make mask of subsetted units in states we want
+            
+            # 8. set unit directly following subsetted unit and is not itself a subsetted unit to have base X (n) = base X (n-1) + marginal X * marginal demand (n-1)
+            temp_mask = mask_of_subset_units.shift(1).fillna(False) # mask for n+1 units, where n rows are subsetted units
+            temp_mask = temp_mask & ~mask_of_subset_units # mask for n+1 units that are not themselves n units
+            temp_mask2 = temp_mask.shift(-1).fillna(False) # rows that precede the prior mask (subsetted units)
+            for e in ['co2', 'so2', 'nox']: # I coded poorly, so we gotta loop through emissions columns again
+                temp = (df_subset.loc[temp_mask2, 'full_' + e + '_base'] + 
+                        numpy.multiply(df_subset.loc[temp_mask2, 'full_' + e + '_marg'], 
+                                       df_subset.loc[temp_mask2, "demand"] - df_subset.loc[temp_mask2, "s"])) # perform the operation
+                # replace relevant units
+                df_subset.loc[temp_mask, 'full_' + e + '_base'] = temp.reindex_like(df_subset.loc[temp_mask, 'full_' + e + '_base'], method='ffill') 
+            
+            self.df_subset = df_subset # update subsetted copy of dataframe
 
     def returnFullMarginalValue(self, demand, col_type):
-        """ Given demand and col_type inputs, return the col_type (i.e. 'co2' for marginal co2 emissions rate or 'coal_mix' for coal share of the generation) of the marginal units in the Full model (the Full model includes the minimum output constraint).
+        """ Given demand and col_type inputs, return the col_type (i.e. 'co2' for marginal co2 emissions rate or 'coal_mix' for coal share of the generation)
+        of the marginal units in the Full model (the Full model includes the minimum output constraint).
         ---
         demand : [MW]
         col_type : 'co2', 'so2', 'nox', 'coal_mix', etc.
@@ -1429,10 +1489,25 @@ class bidStack(object):
         self.f_totalConsHydroFull = scipy.interpolate.interp1d(test.demand, test['full_hydro_consumption_base'] + (test['demand'] - test['s']) * test['full_hydro_consumption_marg'])
         self.f_totalConsGeothermalFull = scipy.interpolate.interp1d(test.demand, test['full_geothermal_consumption_base'] + (test['demand'] - test['s']) * test['full_geothermal_consumption_marg'])
         self.f_totalConsBiomassFull = scipy.interpolate.interp1d(test.demand, test['full_biomass_consumption_base'] + (test['demand'] - test['s']) * test['full_biomass_consumption_marg'])
-
+        
+        ## if subsetting, prepare subset functions (only for emissions)
+        if self.states_to_subset != []: # check if there are states in the list
+            test = self.df_subset.copy()
+            # for all functions, set out of bounds value equal to the highest value in the list 
+            temp = test['full_co2_base'] + (test['demand'] - test['s']) * test['full_co2_marg'] # CO2
+            self.f_totalCO2Full_subset = scipy.interpolate.interp1d(test.demand, temp, 
+                                                        bounds_error=False, fill_value=temp.iloc[-1])
+            temp = test['full_so2_base'] + (test['demand'] - test['s']) * test['full_so2_marg'] # SO2
+            self.f_totalSO2Full_subset = scipy.interpolate.interp1d(test.demand, temp, 
+                                                        bounds_error=False, fill_value=temp.iloc[-1])
+            temp = test['full_nox_base'] + (test['demand'] - test['s']) * test['full_nox_marg'] # NOx
+            self.f_totalNOXFull_subset = scipy.interpolate.interp1d(test.demand, temp, 
+                                                        bounds_error=False, fill_value=temp.iloc[-1])
+        
 
     def returnFullTotalValue(self, demand, col_type):
-        """ Given demand and col_type inputs, return the total column of the online power plants in the Full model (the Full model includes the minimum output constraint).
+        """ Given demand and col_type inputs, return the total column of the online power plants in the Full model 
+        (the Full model includes the minimum output constraint).
         ---
         demand : [MW]
         col_type : 'co2', 'so2', 'nox', 'coal_mix', etc.
@@ -1476,6 +1551,23 @@ class bidStack(object):
             return self.f_totalConsGeothermalFull(demand)
         if col_type == 'biomass_consumption':
             return self.f_totalConsBiomassFull(demand)
+        
+    
+    def returnFullTotalValueSubset(self, demand, col_type):
+        """ Given demand and col_type inputs, return the total column of the online power plants in the Full model 
+        (the Full model includes the minimum output constraint).
+        This is a modification of the above function (of the same name minus "Subset") that calculates total emissions for subset states
+        ---
+        demand : [MW]
+        col_type : 'co2', 'so2', 'nox'
+        return : total emissions = base emissions (marginal unit) + marginal emissions (marginal unit) * (D - s)
+        """
+        if col_type == 'co2':
+            return self.f_totalCO2Full_subset(demand)
+        if col_type == 'so2':
+            return self.f_totalSO2Full_subset(demand)
+        if col_type == 'nox':
+            return self.f_totalNOXFull_subset(demand)
     
     
     def plotBidStack(self, df_column, plot_type, fig_dim = (4,4), production_cost_only=True):
@@ -1761,11 +1853,12 @@ class bidStack(object):
     
 
 class dispatch(object):
-    def __init__(self, bid_stack_object, demand_df, time_array=0):
+    def __init__(self, bid_stack_object, demand_df,  states_to_subset = [], time_array=0):
         """ Read in bid stack object and the demand data. Solve the dispatch by projecting the bid stack onto the demand time series,
             updating the bid stack object regularly according to the time_array
         ---
         gen_data_object : a object defined by class generatorData
+        states_to_subset : list of 2-letter capital abbreviation of all states in which emissions will be subset
         bid_stack_object : a bid stack object defined by class bidStack
         demand_df : a dataframe with the demand data 
         time_array : a scipy array containing the time intervals that we are changing fuel price etc. 
@@ -1774,6 +1867,7 @@ class dispatch(object):
         self.bs = bid_stack_object
         self.df = demand_df
         self.time_array = time_array
+        self.states_to_subset = states_to_subset
         self.addDFColumns() # adds columns to demand df to hold results
         
                
@@ -1787,6 +1881,9 @@ class dispatch(object):
                             'oil_mix', 'marg_gen', 'coal_mix_marg', 'marg_gen_fuel_type', 'mmbtu_coal', 'mmbtu_gas', 'mmbtu_oil'))
         dfExtension = pandas.DataFrame(index=indx, columns=cols).fillna(0)
         self.df = pandas.concat([self.df, dfExtension], axis=1)
+        
+        if self.states_to_subset != []: # if there are states to subset, create miniature dataframe for subset results
+            self.df_subset = self.df[['datetime', 'demand', 'co2_tot', 'so2_tot', 'nox_tot']].copy(deep=True)
 
 
     def calcDispatchSlice(self, bstack, start_date=0, end_date=0):
@@ -1822,6 +1919,16 @@ class dispatch(object):
         df_slice['mmbtu_gas'] = df_slice.demand.apply(bstack.returnFullTotalValue, args=('gas_consumption',)) #total gas mmBtu        
         df_slice['mmbtu_oil'] = df_slice.demand.apply(bstack.returnFullTotalValue, args=('oil_consumption',)) #total oil mmBtu
         self.df[(self.df.datetime >= pandas._libs.tslib.Timestamp(start_date)) & (self.df.datetime < pandas._libs.tslib.Timestamp(end_date))] = df_slice
+        
+        if self.states_to_subset != []: # if there are states to subset, repeat for emissions
+            #slice of self.df within the desired dates    
+            df_slice = self.df_subset[(self.df_subset.datetime >= pandas._libs.tslib.Timestamp(start_date)) & 
+                               (self.df_subset.datetime < pandas._libs.tslib.Timestamp(end_date))].copy(deep=True)
+            for e in ['co2', 'so2', 'nox']:
+                df_slice[e + '_tot'] = df_slice.demand.apply(bstack.returnFullTotalValueSubset, args=(e,)) #total emissions (kg) of subsetted online generators 
+            # replace df slice in relevant period
+            self.df_subset[(self.df_subset.datetime >= pandas._libs.tslib.Timestamp(start_date)) 
+                           & (self.df_subset.datetime < pandas._libs.tslib.Timestamp(end_date))] = df_slice
   
 
     def createDfMdtCoal(self, demand_threshold, time_t):
@@ -1949,13 +2056,11 @@ class dispatch(object):
                     bs_temp.coal_mdt_demand_threshold = dt
                     bs_temp.updateDf(gd_df_mdt_temp)
                     bs_mdt_dict.update({dt:bs_temp})
-                #for each minimum downtime event, recalculate the dispatch by inputting the bs_mdt_dict bidStacks into calcDispatchSlice to override the existing dp.df results datafram
+                #for each minimum downtime event, recalculate the dispatch by inputting the bs_mdt_dict bidStacks into calcDispatchSlice to override the existing dp.df results dataframe
                 for i, e in events_mdt_coal_t.iterrows():
                     self.calcDispatchSlice(bs_mdt_dict[e.demand_threshold], start_date=e.start ,end_date=e.end)
                 print(str(round(t/float(len(self.time_array)),3)*100) + '% Complete')
                 
-        
-
 
 if __name__ == '__main__': 
     print('nothing')
