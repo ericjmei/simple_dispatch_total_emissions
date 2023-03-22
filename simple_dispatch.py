@@ -248,7 +248,7 @@ class generatorData(object):
                   'SPP' : ['nm','ks','tx','ok','la','ar','mo'],
                   'RFC' : ['wi','mi','il','in','oh','ky','wv','va','md','pa','nj'],
                   'NPCC' : ['ny','ct','de','ri','ma','vt','nh','me'],
-                  'SERC' : ['mo','ar','tx','la','ms','tn','ky','il','va','al','ga','sc','nc'], # NOTE: FL didn't join SERC until 7/2019, so it is not included here
+                  'SERC' : ['mo','ar','tx','la','ms','tn','ky','il','va','al','ga','sc','nc', 'fl'], 
                   'MRO': ['ia','il','mi','mn','mo','mt','nd','ne','sd','wi','wy'], 
                   'TRE': ['ok','tx']}
         #compile the different months of CEMS files into one dataframe, df_cems. 
