@@ -60,6 +60,7 @@
 #   cleanGeneratorData now derates CHP plants according to their electricity : gross ratio
 # v28:
 # added capability to subset total emissions from groups of states within the NERC regions simulated
+# added capability to create counterfactual generatorData object that is adjusted to specified average annual fuel price
 
 
 
@@ -78,7 +79,8 @@ from bisect import bisect_left
 
 class generatorData(object):
     def __init__(self, nerc, egrid_fname, input_folder_rel_path, eia923_fname, ferc714_fname='', ferc714IDs_fname='', cems_folder='', easiur_fname='', 
-                 include_easiur_damages=False, year=2017, fuel_commodity_prices_excel_dir='', hist_downtime = True, coal_min_downtime = 12, cems_validation_run=True):
+                 include_easiur_damages=False, year=2017, fuel_commodity_prices_excel_dir='', hist_downtime = True, coal_min_downtime = 12, cems_validation_run=True,
+                 avg_price_fuel_type={}, CPI=''):
         """ 
         Translates the CEMS, eGrid, FERC, and EIA data into a dataframe for feeding into the bidStack class
         ---
@@ -94,7 +96,12 @@ class generatorData(object):
         fuel_commodity_prices_excel_dir : filename of national EIA fuel prices (in case EIA923 data is empty)
         hist_downtime : if True, will use each generator's maximum weekly mw for weekly capacity. if False, will use maximum annual mw.
         coal_min_downtime : hours that coal plants must remain off if they shut down
-        cems_validation_run : if True, then we are trying to validate the output against CEMS data and will only look at power plants included in the CEMS data
+        cems_validation_run : if True, then we are trying to validate the output against CEMS data and will only look at power plants included in the CEMS data\
+        avg_price_fuel_type : dictionary of fuel types (and purchase type if natural gas) and average price to set monthly fuel prices equal to for
+            counterfactual analysis of short-term price changes
+        CPI : consumer price index file name that spans the time period of interest from https://fred.stlouisfed.org/series/CPIAUCSL
+            NOTE: you don't actually need this unless you're interested in the real dollar adjustment in fuel prices
+                the relative positions of generators will shift proportionally to the fuel prices set in avg_price_fuel_type
         """
         ## read in the data
         
@@ -146,15 +153,26 @@ class generatorData(object):
         except:
             self.ferc714_ids = pandas.read_csv(ferc714IDs_fname) 
             self.ferc714_ids.to_parquet(ferc714IDs_fname.split('.')[0]+'.parquet', index=False)
-
+        
         # other data
         self.cems_folder = cems_folder # we only want data from CEMS anyway
         self.easiur_per_plant = pandas.read_csv(easiur_fname) 
         self.fuel_commodity_prices = pandas.read_excel(fuel_commodity_prices_excel_dir, str(year)) # needs custom updating
-        self.cems_validation_run = cems_validation_run # I feel like we can always set to true because we're only evaluating CEMS anyway
+        self.cems_validation_run = cems_validation_run 
         self.hist_downtime = hist_downtime
         self.coal_min_downtime = coal_min_downtime
         self.year = year
+        # if shifting average fuel prices, read in that dictionary as well
+        if bool(avg_price_fuel_type): # execute only if dictionary is not empty
+            self.avg_price_fuel_type = avg_price_fuel_type
+            
+            print("Reading in CPI data...")
+            CPI = pandas.read_csv(CPI) # consumer price index data
+            # add year and month columns
+            CPI['DATE'] = pandas.to_datetime(CPI['DATE']) # cast date column into datetime
+            CPI['year'] = CPI['DATE'].dt.year
+            CPI['month'] = CPI['DATE'].dt.month
+            self.CPI = CPI
         
         ## data cleaning
         self.cleanGeneratorData() # converts eGRID and CEMS data to df of generator units and df of all CEMS data in NERC region
@@ -511,24 +529,25 @@ class generatorData(object):
             #find the weighted average monthly fuel price matching 'f' and 'o'
             temp = df[(df.orispl==o) & (df.fuel==f)][['month', 'quantity', 'fuel_price']] # finds fuel prices and quantities over all months
             if len(temp) != 0: # do this if dataframe is not empty; NOTE: does not mean that the fuel price is non-nan
-                temp['weighted'] = scipy.multiply(temp.quantity, temp.fuel_price) # multiplies heat throughput by fuel price
+                temp['weighted'] = numpy.multiply(temp.quantity, temp.fuel_price) # multiplies heat throughput by fuel price
                 temp = temp.groupby(['month'], as_index=False).sum()[['month', 'quantity', 'weighted']] # calcs if multiple fuels are used
-                temp['fuel_price'] = scipy.divide(temp.weighted, temp.quantity) # weighted average price of all fuels used per each month
+                temp['fuel_price'] = numpy.divide(temp.weighted, temp.quantity) # weighted average price of all fuels used per each month
                 temp_prices = pandas.DataFrame({'month': numpy.arange(12)+1})
                 temp_prices = temp_prices.merge(temp[['month', 'fuel_price']], on='month', how='left') # add fuel prices to dataframe
                 temp_prices.loc[temp_prices.fuel_price.isna(), 'fuel_price'] = temp_prices.fuel_price.median() # populates nan months by median fuel price
                 #add the monthly fuel prices into orispl_prices
-                orispl_prices.loc[orispl_prices.orispl_unit==o_u, orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel'])] = scipy.append(scipy.array(temp_prices.fuel_price),temp.quantity.sum())
+                orispl_prices.loc[orispl_prices.orispl_unit==o_u, orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel'])] = numpy.append(numpy.array(temp_prices.fuel_price),temp.quantity.sum())
         
         #add in additional purchasing information for slicing that we can remove later on; adds purchase type to the orispl prices dataframe
         orispl_prices = orispl_prices.merge(df[['orispl' , 'fuel', 'purchase_type']].drop_duplicates(subset=['orispl', 'fuel'], keep='first'), on=['orispl', 'fuel'], how='left')           
                 
         #for any fuels that we have non-zero region level EIA923 data, apply those monthly fuel price profiles to other generators with the same fuel type but that do not have EIA923 fuel price data
         f_iter = list(orispl_prices[orispl_prices[1] != 0].dropna().fuel.unique()) # all types of unique fuels during this period
-        if 'rc' in orispl_prices.fuel.unique(): # NOTE: not sure what rc is right now
+        if 'rc' in orispl_prices.fuel.unique(): # rc is refined coal
             f_iter.append('rc')
         for f in f_iter:
-            orispl_prices_filled = orispl_prices[(orispl_prices.fuel==f) & (orispl_prices[1] != 0.0)].dropna().drop_duplicates(subset='orispl', keep='first').sort_values('quantity', ascending=0) # retrieves non-zero and non-nan units of particular fuel type
+            orispl_prices_filled = orispl_prices[(orispl_prices.fuel==f) & (orispl_prices[1] != 0.0)].dropna().drop_duplicates(
+                subset='orispl', keep='first').sort_values('quantity', ascending=0) # retrieves non-zero and non-nan units of particular fuel type
             #orispl_prices_empty = orispl_prices[(orispl_prices.fuel==f) & (orispl_prices[1].isna())]
             orispl_prices_empty = orispl_prices[(orispl_prices.fuel==f) & (orispl_prices[1]==0)].dropna(subset=['quantity']) #plants with some EIA923 data but no prices
             orispl_prices_nan = orispl_prices[(orispl_prices.fuel==f) & (orispl_prices['quantity'].isna())] #plants with no EIA923 data
@@ -540,9 +559,9 @@ class generatorData(object):
                 temp = df[(df.fuel==f) & (df.fuel_price.notna())][['month', 'quantity', 'fuel_price', 'purchase_type']]
                 temp = temp[(temp.fuel_price >= temp.fuel_price.quantile(0.05)) & (temp.fuel_price <= temp.fuel_price.quantile(0.95))]
                 #weight the remaining prices according to quantity purchased
-                temp['weighted'] = scipy.multiply(temp.quantity, temp.fuel_price)
+                temp['weighted'] = numpy.multiply(temp.quantity, temp.fuel_price)
                 temp = temp.groupby(['month'], as_index=False).sum()[['month', 'quantity', 'weighted']]
-                temp['fuel_price'] = scipy.divide(temp.weighted, temp.quantity)
+                temp['fuel_price'] = numpy.divide(temp.weighted, temp.quantity)
                 #build a dataframe that we can insert into orispl_prices
                 temp_prices = pandas.DataFrame({'month': numpy.arange(12)+1})
                 temp_prices = temp_prices.merge(temp[['month', 'fuel_price']], on='month', how='left')
@@ -551,11 +570,11 @@ class generatorData(object):
                 orispl_prices.loc[(orispl_prices.fuel==f) & 
                                   ((orispl_prices.orispl.isin(orispl_prices_empty.orispl)) | 
                                    (orispl_prices.orispl.isin(orispl_prices_nan.orispl))), 
-                                  orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'purchase_type'])] = scipy.append(
-                                      scipy.array(temp_prices.fuel_price),temp.quantity.sum())
+                                  orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'purchase_type'])] = numpy.append(
+                                      numpy.array(temp_prices.fuel_price),temp.quantity.sum())
         
-        #if natural gas, sort by supplier type (contract, tolling, spot, or other)
-            elif f =='ng':        
+            #if natural gas, sort by supplier type (contract, tolling, spot, or other)
+            elif f =='ng': 
                 orispl_prices_filled_0 = orispl_prices_filled.copy()
                 orispl_prices_empty_0 = orispl_prices_empty.copy()
                 #loop through the different purchase types and update any empties
@@ -577,7 +596,7 @@ class generatorData(object):
                         orispl_prices.loc[(orispl_prices.orispl==o) 
                                           & (orispl_prices.fuel==f), 
                                           orispl_prices.columns
-                                          .difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])] = scipy.array(
+                                          .difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])] = numpy.array(
                                               orispl_prices_filled[orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])]
                                               .iloc[loop]) * multiplier # populate monthly fuel price columns of generator with 0 data with the first generator with actual non-zero and non-nan data
                         #keep looping through the generators with eia923 price data until we have used all of their fuel price profiles, 
@@ -595,10 +614,11 @@ class generatorData(object):
                 for o in orispl_prices_nan.orispl.unique():
                     orispl_prices.loc[(orispl_prices.orispl==o) & 
                                       (orispl_prices.fuel==f), 
-                                      orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])] = scipy.array(
+                                      orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])] = numpy.array(
                                           orispl_prices_filled_new[orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])]
                                           .iloc[loop]) # populate monthly fuel price columns of generator with 0 data with the first generator with actual non-zero and non-nan data
-                    #keep looping through the generators with eia923 price data until we have used all of their fuel price profiles, then start again from the beginning of the loop with the plant with the highest energy production
+                    #keep looping through the generators with eia923 price data until we have used all of their fuel price profiles, 
+                    # then start again from the beginning of the loop with the plant with the highest energy production
                     if loop < loop_len:
                         loop += 1
                     else:
@@ -617,9 +637,9 @@ class generatorData(object):
                 #we will use the plant with the highest energy production first, assigning its fuel price profile 
                 #to one of the generators that does not have EIA923 data. We will move on to plant with the next highest energy production
                 #and so on, uniformly distributing the available EIA923 fuel price profiles to generators without fuel price data
-                for o in scipy.concatenate((orispl_prices_empty.orispl.unique(),orispl_prices_nan.orispl.unique())):
+                for o in numpy.concatenate((orispl_prices_empty.orispl.unique(),orispl_prices_nan.orispl.unique())):
                     orispl_prices.loc[(orispl_prices.orispl==o) & (orispl_prices.fuel==f), 
-                                      orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])] = scipy.array(
+                                      orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])] = numpy.array(
                                           orispl_prices_filled[orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])]
                                           .iloc[loop]) * multiplier
                     #keep looping through the generators with eia923 price data until we have used all of their fuel price profiles, 
@@ -630,22 +650,133 @@ class generatorData(object):
                         loop = 0
         
         #and now we may have some nan values for fuel types that had no nerc_region eia923 data. We'll start with the national median for the EIA923 data.
-        f_array = scipy.intersect1d(orispl_prices[orispl_prices[1].isna()].fuel.unique(), df.fuel[~df.fuel.isna()].unique())
+        f_array = numpy.intersect1d(orispl_prices[orispl_prices[1].isna()].fuel.unique(), df.fuel[~df.fuel.isna()].unique())
         for f in f_array: 
             temp = df[df.fuel==f][['month', 'quantity', 'fuel_price']]
-            temp['weighted'] = scipy.multiply(temp.quantity, temp.fuel_price)
+            temp['weighted'] = numpy.multiply(temp.quantity, temp.fuel_price)
             temp = temp.groupby(['month'], as_index=False).sum()[['month', 'quantity', 'weighted']]
-            temp['fuel_price'] = scipy.divide(temp.weighted, temp.quantity)
+            temp['fuel_price'] = numpy.divide(temp.weighted, temp.quantity)
             temp_prices = pandas.DataFrame({'month': numpy.arange(12)+1})
             temp_prices = temp_prices.merge(temp[['month', 'fuel_price']], on='month', how='left')
             temp_prices.loc[temp_prices.fuel_price.isna(), 'fuel_price'] = temp_prices.fuel_price.median()
-            orispl_prices.loc[orispl_prices.fuel==f, orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'purchase_type'])] = scipy.append(scipy.array(temp_prices.fuel_price),temp.quantity.sum())
+            orispl_prices.loc[orispl_prices.fuel==f, orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'purchase_type'])] = numpy.append(
+                numpy.array(temp_prices.fuel_price),temp.quantity.sum())
+        
+        ## if we are shifting average fuel prices to some counterfactual value, we will do that here
+        if bool(self.avg_price_fuel_type): # execute only if dictionary is not empty
+            ## adjust nominal prices to real 2006/01 prices
+            # function adjusts nominal dollars of a certain month and year to real 2006/1 dolalrs
+            def adjust_to_2006_1_real_dollars(nominal_dollars, year, month):
+                CPI_2006 = self.CPI.loc[((self.CPI['year'] == 2006) & (self.CPI['month'] == 1)), 'CPIAUCSL'].values[0]
+                CPI_current = self.CPI.loc[((self.CPI['year'] == year) & (self.CPI['month'] == month)), 'CPIAUCSL'].values[0]
+                real_dollars = nominal_dollars * CPI_current/CPI_2006
+                return real_dollars
+
+            temp_orispl_prices = orispl_prices.copy(deep=True)
+            temp_orispl_prices[[i for i in range(1, 13)]] = orispl_prices[range(1, 13)].apply(
+                lambda x: adjust_to_2006_1_real_dollars(x, self.year, x.name)) # adjusts to real 2006 dollars based on current year and month
+            
+            ## create a dataframe to hold fuel_price_metrics: number of units, average before, average after, 
+            #  average % change, min before, max before, standard deviation
+            tuple_list = [] # assemble dataframe columns
+            for key, value in self.avg_price_fuel_type.items():
+                    if isinstance(value, dict):
+                        for subkey, subvalue in value.items():
+                            if isinstance(subvalue, dict):
+                                subvalue = numpy.nan
+                            tuple_list.append((key, subkey, subvalue))
+                    else:
+                        tuple_list.append((key, numpy.nan, value))
+            fuel_price_metrics = pandas.DataFrame(tuple_list, columns=["fuel", "purchase_type", "average_after"])
+            
+            # Repeat the 'fuel_price_average_before', 'average_percent_change', 'standard_deviation', 
+            # 'min_before', and 'max_before' columns with suffixes from 1 to 12
+            suffixes = [str(i) for i in range(1, 13)]
+            cols_to_repeat = ['average_before', 'average_percent_change', 'standard_deviation', 'min_before', 'max_before']
+            new_cols = [f"{col}{suffix}" for col in cols_to_repeat for suffix in suffixes]
+            new_cols = ['number_of_units'] + new_cols # also append 'number of units' to the list
+            fuel_price_metrics = pandas.concat([fuel_price_metrics, pandas.DataFrame(columns=new_cols)]) # append new empty columns
+            
+            
+            ## iterate over all unique generator fuel types, adjusting the fuel prices if they exist in the avg_price_fuel_type dictionary
+            #  and populating the fuel_price_metrics dataframe
+            f_iter = list(orispl_prices.fuel.unique()) # all types of unique fuels during this period
+            for fuel_type in f_iter:
+                if fuel_type not in self.avg_price_fuel_type:
+                    units_not_in_dict = (orispl_prices["fuel"] == fuel_type).sum() # number of units wiht this fuel type
+                    print(fuel_type + " is not in the dictionary of average fuel prices (" 
+                          + str(units_not_in_dict) + " units out of " + str(orispl_prices.shape[0])
+                          + " total units)")
+                    # add row to metrics dataframe
+                    new_row = pandas.DataFrame({'fuel': [fuel_type], 'number_of_units': [units_not_in_dict]})
+                    fuel_price_metrics = pandas.concat([fuel_price_metrics, new_row])
+                elif fuel_type == 'ng':
+                    for purchase_type in self.avg_price_fuel_type['ng']: # iterate over all contract types, same method as in last 'else' statement (that is more readable)
+                        # mask for units that have matching fuel type and contract type
+                        mask = (temp_orispl_prices["fuel"] == fuel_type) & (temp_orispl_prices["purchase_type"] == purchase_type)
+                        if purchase_type == 'other': # if other, retrieve all ng that are not the three purchase types
+                            mask = ((temp_orispl_prices["fuel"] == fuel_type) & (temp_orispl_prices["purchase_type"] != 'T') 
+                                    & (temp_orispl_prices["purchase_type"] != 'S')  & (temp_orispl_prices["purchase_type"] != 'C'))
+                        if purchase_type == 'all': # if all (should be the only one in the list), apply to all ng; aka treat like 'else' statement
+                            mask = temp_orispl_prices["fuel"] == fuel_type
+                        # mask for fuel price metrics index
+                        fuel_price_metrics_row = (fuel_price_metrics['fuel'] == fuel_type) & (fuel_price_metrics['purchase_type'] == purchase_type)
+                        
+                        ## calculate 'before' metrics (number of units, average, min, max, standard deviation)
+                        fuel_price_metrics.loc[fuel_price_metrics_row, 'number_of_units'] = mask.sum() # number of units
+                        temp = temp_orispl_prices.loc[mask, range(1, 13)] # retrieve all price data to manipulate
+                        # average before
+                        fuel_price_metrics.loc[fuel_price_metrics_row, [f"average_before{suffix}" for suffix in suffixes]] = temp.mean(axis=0, skipna=True).values
+                        # min before
+                        fuel_price_metrics.loc[fuel_price_metrics_row, [f"min_before{suffix}" for suffix in suffixes]] = temp.min(axis=0, skipna=True).values
+                        # max before
+                        fuel_price_metrics.loc[fuel_price_metrics_row, [f"max_before{suffix}" for suffix in suffixes]] = temp.max(axis=0, skipna=True).values
+                        # standard deviation 
+                        fuel_price_metrics.loc[fuel_price_metrics_row, [f"standard_deviation{suffix}" for suffix in suffixes]] = temp.std(axis=0, skipna=True).values 
+                        # calculate average percent change from actual to counterfactual average
+                        avg_shift = numpy.divide((self.avg_price_fuel_type[fuel_type][purchase_type]
+                                                  - temp.mean(axis=0, skipna=True))*100, temp.mean(axis=0, skipna=True)) # negative if shifting down
+                        avg_shift.replace([numpy.inf, -numpy.inf], numpy.nan, inplace=True) # replace inf if dividing by 0 with nan
+                        fuel_price_metrics.loc[fuel_price_metrics_row, [f"average_percent_change{suffix}" for suffix in suffixes]] = avg_shift.values
+                        
+                        ## perform shift
+                        avg_ratio = self.avg_price_fuel_type[fuel_type][purchase_type]/temp.mean(axis=0, skipna=True) # new average/old average
+                        temp_orispl_prices.loc[mask, range(1, 13)] = temp_orispl_prices.loc[mask, range(1, 13)].multiply(avg_ratio, axis=1)
+                else:
+                    # mask for units that have matching fuel type
+                    mask = temp_orispl_prices["fuel"] == fuel_type
+                    # mask for fuel price metrics index
+                    fuel_price_metrics_row = fuel_price_metrics['fuel'] == fuel_type
+                    
+                    ## calculate 'before' metrics (number of units, average, min, max, standard deviation)
+                    fuel_price_metrics.loc[fuel_price_metrics_row, 'number_of_units'] = mask.sum() # number of units
+                    temp = temp_orispl_prices.loc[mask, range(1, 13)] # retrieve all price data to manipulate
+                    # average before
+                    fuel_price_metrics.loc[fuel_price_metrics_row, [f"average_before{suffix}" for suffix in suffixes]] = temp.mean(axis=0, skipna=True).values
+                    # min before
+                    fuel_price_metrics.loc[fuel_price_metrics_row, [f"min_before{suffix}" for suffix in suffixes]] = temp.min(axis=0, skipna=True).values
+                    # max before
+                    fuel_price_metrics.loc[fuel_price_metrics_row, [f"max_before{suffix}" for suffix in suffixes]] = temp.max(axis=0, skipna=True).values
+                    # standard deviation 
+                    fuel_price_metrics.loc[fuel_price_metrics_row, [f"standard_deviation{suffix}" for suffix in suffixes]] = temp.std(axis=0, skipna=True).values 
+                    # calculate average percent change from actual to counterfactual average
+                    avg_shift = numpy.divide((self.avg_price_fuel_type[fuel_type] - temp.mean(axis=0, skipna=True))*100, temp.mean(axis=0, skipna=True)) # negative if shifting down
+                    avg_shift.replace([numpy.inf, -numpy.inf], numpy.nan, inplace=True) # replace inf if dividing by 0 with nan
+                    fuel_price_metrics.loc[fuel_price_metrics_row, [f"average_percent_change{suffix}" for suffix in suffixes]] = avg_shift.values
+                    
+                    ## perform shift
+                    avg_ratio = self.avg_price_fuel_type[fuel_type]/temp.mean(axis=0, skipna=True) # new average/old average
+                    temp_orispl_prices.loc[mask, range(1, 13)] = temp_orispl_prices.loc[mask, range(1, 13)].multiply(avg_ratio, axis=1)
+            
+            self.fuel_price_metrics = fuel_price_metrics # save metrics
+            orispl_prices = temp_orispl_prices.copy(deep=True) # copy over the new fuel prices
+        
         #for any fuels that don't have EIA923 data at all (for all regions) we will use commodity price approximations from an excel file
         #first we need to change orispl_prices from months to weeks
         orispl_prices.columns = ['orispl_unit', 'orispl', 'fuel', 1, 5, 9, 14, 18, 22, 27, 31, 36, 40, 44, 48, 'quantity', 'purchase_type'] # weeks corresponding to months of year
-        #scipy.array(orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type']))
+        #numpy.array(orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type']))
         test = orispl_prices.copy(deep=True)[['orispl_unit', 'orispl', 'fuel']] # remove weekly price columns
-        month_weeks = scipy.array(orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])) # weeks corresponding to months of year
+        month_weeks = numpy.array(orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])) # weeks corresponding to months of year
         for c in numpy.arange(52)+1: # loop through all weeks
             if c in month_weeks: # for weeks at first of month,
                 test['fuel_price'+ str(c)] = orispl_prices[c] # update price for week column
@@ -653,20 +784,20 @@ class generatorData(object):
                 test['fuel_price'+ str(c)] = test['fuel_price'+str(c-1)] # otherwise, keep price the same for week column
         orispl_prices = test.copy(deep=True)
         
-        #now we add in the weekly fuel commodity prices ##NOTE: removed this to run 2018 - need to know how much data this affects
-        prices_fuel_commodity = self.fuel_commodity_prices # NOTE: may need to find suitable replacement for fuel commodity prices
+        #now we add in the weekly fuel commodity prices ## NOTE: We don't update this data source but it affects <1% of all generators at most
+        prices_fuel_commodity = self.fuel_commodity_prices 
         f_array = orispl_prices[orispl_prices['fuel_price1'].isna()].fuel.unique() # identify any remaining fuels with nan prices
         percNan = ((orispl_prices[orispl_prices['fuel_price1'].isna()].shape[0])
                        *100/orispl_prices.shape[0]) # percent of data that are outliers and will be removed
         print(str(percNan)+"% generators from "+self.nerc+" have no EIA fuel price data")
-        print("these fuels are "+', '.join(f_array))
+        print("the fuels that need to be manually filled are "+', '.join(f_array))
         for f in f_array:
             l = len(orispl_prices.loc[orispl_prices.fuel==f, orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel'])])
-            orispl_prices.loc[orispl_prices.fuel==f, orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel'])] = scipy.tile(prices_fuel_commodity[f], (l,1)) # fill with commodity prices
+            orispl_prices.loc[orispl_prices.fuel==f, orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel'])] = numpy.tile(prices_fuel_commodity[f], (l,1)) # fill with commodity prices
         
         #now we have orispl_prices, which has a weekly fuel price for each orispl_unit based mostly on EIA923 data with some commodity, national-level data from EIA to supplement
         #now merge the fuel price columns into self.df
-        orispl_prices.drop(['orispl', 'fuel'], axis=1, inplace=True)
+        orispl_prices.drop(['orispl', 'fuel'], axis=1, inplace=True) 
                
         #save
         self.df = self.df.merge(orispl_prices, on='orispl_unit', how='left') # we are left with weekly fuel prices for each generating unit in the df
@@ -840,7 +971,7 @@ class generatorData(object):
         df_bas_temp = df_bas_temp.groupby('datetime', as_index=False).max() # takes max price of all of these
         df_bas_temp.columns = ['datetime', 'price']        
         #add the price column to self.hist_dispatch
-        self.hist_dispatch['gen_cost_marg'] = df_bas_temp.price # NOTE: date time will be misaligned because hist_dispatch is in UTC. Will fix this later.
+        self.hist_dispatch['gen_cost_marg'] = df_bas_temp.price 
 
 
     def demandTimeSeries(self):

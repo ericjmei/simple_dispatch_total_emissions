@@ -25,7 +25,6 @@ from simple_dispatch import dispatch
 if __name__ == '__main__':
     
     ## simple dispatch setup, define path and file names
-    # NOTE: working on getting the FERC and EIA data from PUDL
     
     # ferc 714 data from here: https://www.ferc.gov/docs-filing/forms/form-714/data.asp
     # ferc 714 ids available on the simple_dispatch github repository
@@ -34,15 +33,25 @@ if __name__ == '__main__':
     # cems data from here: ftp://newftp.epa.gov/DmDnLoad/emissions/hourly/monthly/
     # easiur data from here: https://barney.ce.cmu.edu/~jinhyok/easiur/online/
     # fuel_default_prices.xlsx compiled from data from https://www.eia.gov/
-    input_folder_rel_path = "../Data/Simple Dipatch Inputs" # where to access input data relative to code folder
+    input_folder_rel_path = "../Data/Simple Dispatch Inputs" # where to access input data relative to code folder
     ferc714_part2_schedule6_csv = 'Part 2 Schedule 6 - Balancing Authority Hourly System Lambda.csv'
     ferc714IDs_csv= 'Respondent IDs.csv'
     cems_folder_path ='../Data/CAMD/PUDL retrieved hourly' # relative path for all CEMS outputs
     easiur_csv_path ='egrid_2016_plant_easiur.csv'
     fuel_commodity_prices_xlsx = 'fuel_default_prices.xlsx'
     
-    # these will change with every year
-    run_year = 2008 ## specify run year
+    ## specify run year
+    run_year = 2008 
+    ## define states to subset
+    states_to_subset_all = [['GA'], # SERC
+                            ['GA', 'AL', 'TN'], # SERC
+                            ['IL', 'IN'], # SERC
+                            ['OH', 'PA', 'WV', 'IN', 'MI', 'NJ'], # RFC
+                            ['NY', 'CT']] # NPCC
+    ## define NERC regions to run
+    nerc_region_all = ['SERC', 'SERC', 'SERC', 'RFC', 'NPCC']
+    
+    ## these file paths will change with every year (automatically when run_year is set)
     eia923_schedule5_xlsx = 'EIA923_Schedules_2_3_4_5_M_12_'+str(run_year)+'_Final_Revision.xlsx' # EIA 923
     # different run years will have different eGRIDs
     if run_year == 2006:
@@ -64,13 +73,6 @@ if __name__ == '__main__':
     elif run_year == 2019:
         egrid_data_xlsx = 'egrid2019_data.xlsx'
     
-    ## define states to subset
-    states_to_subset_all = [['GA'], # SERC
-                            ['IL', 'IN'], # SERC
-                            ['OH', 'PA', 'WV', 'IN', 'MI', 'NJ'], # NPCC
-                            ['NY', 'CT']] # RFC
-    ## define NERC regions to run
-    nerc_region_all = ['SERC', 'SERC', 'NPCC', 'RFC']
     
     for i, nerc_region in enumerate(nerc_region_all):
         
@@ -78,7 +80,7 @@ if __name__ == '__main__':
         try: # get shortened pickeled dictionary if generatorData has already been run for the particular year and region
             # change path to simple dispatch output data folder
             os.chdir(base_dname) 
-            os.chdir("../Data/Simple Dispatch Outputs") # where to access output data relative to code folder
+            os.chdir("../Data/Simple Dispatch Outputs/Actual Scenario") # where to access output data relative to code folder
             gd_short = pickle.load(open('generator_data_short_%s_%s.obj'%(nerc_region, str(run_year)), 'rb')) # load generatordata object
         except:
             # run the generator data object
@@ -102,7 +104,7 @@ if __name__ == '__main__':
                         'mdt_coal_events': gd.mdt_coal_events, 'df': gd.df}
             # change path to simple dispatch output data folder
             os.chdir(base_dname)
-            os.chdir("../Data/Simple Dispatch Outputs") # where to access output data relative to code folder
+            os.chdir("../Data/Simple Dispatch Outputs/Actual Scenario") # where to access output data relative to code folder
             pickle.dump(gd_short, open('generator_data_short_%s_%s.obj'%(nerc_region, str(run_year)), 'wb'))
         
         # save historical actual dispatch
@@ -117,13 +119,15 @@ if __name__ == '__main__':
         
         ## run and save the dispatch object - use the nerc region's merit order (bs), a demand timeseries (gd.demand_data), 
         #  and a time array (default is array([ 1,  2, ... , 51, 52]) for 52 weeks to run a whole year)
-        # change path to simple dispatch output data folder
-        os.chdir(base_dname)
-        os.chdir("../Data/Simple Dispatch Outputs/Dispatch Subset/Raw") # where to access output data relative to code folder
-        #run the dispatch object
         dp = dispatch(bs, gd_short["demand_data"], states_to_subset = states_to_subset, 
                       time_array=np.arange(52)+1) #set up the dispatch object         
         dp.calcDispatchAll() #function that solves the dispatch for each time period in time_array (default for each week of the year)
         
         #save dispatch results 
+        # change path to simple dispatch output data folder
+        os.chdir(base_dname)
+        os.chdir("../Data/Simple Dispatch Outputs/Actual Scenario")
+        dp.df.to_csv('simple_dispatch_'+nerc_region+'_'+str(run_year)+'.csv', index=False) # save larger dispatch results
+        # save subset results
+        os.chdir("./Dispatch Subset/Raw") 
         dp.df_subset.to_parquet('simple_dispatch_'+nerc_region+'_'+str(run_year)+'_' + '_'.join(states_to_subset)+'.parquet', index=False)
