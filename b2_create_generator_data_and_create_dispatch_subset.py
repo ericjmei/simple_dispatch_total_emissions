@@ -34,6 +34,7 @@ if __name__ == '__main__':
     # easiur data from here: https://barney.ce.cmu.edu/~jinhyok/easiur/online/
     # fuel_default_prices.xlsx compiled from data from https://www.eia.gov/
     input_folder_rel_path = "../Data/Simple Dispatch Inputs" # where to access input data relative to code folder
+    output_rel_path = "../Data/Simple Dispatch Outputs/2023-03-31 Actual without Hist Downtime/" # where to save output data
     ferc714_part2_schedule6_csv = 'Part 2 Schedule 6 - Balancing Authority Hourly System Lambda.csv'
     ferc714IDs_csv= 'Respondent IDs.csv'
     cems_folder_path ='../Data/CAMD/PUDL retrieved hourly' # relative path for all CEMS outputs
@@ -45,11 +46,10 @@ if __name__ == '__main__':
     ## define states to subset
     states_to_subset_all = [['GA'], # SERC
                             ['GA', 'AL', 'TN'], # SERC
-                            ['IL', 'IN'], # SERC
-                            ['OH', 'PA', 'WV', 'IN', 'MI', 'NJ'], # RFC
+                            [], # RFC
                             ['NY', 'CT']] # NPCC
     ## define NERC regions to run
-    nerc_region_all = ['SERC', 'SERC', 'SERC', 'RFC', 'NPCC']
+    nerc_region_all = ['SERC', 'SERC', 'RFC', 'NPCC']
     
     ## these file paths will change with every year (automatically when run_year is set)
     eia923_schedule5_xlsx = 'EIA923_Schedules_2_3_4_5_M_12_'+str(run_year)+'_Final_Revision.xlsx' # EIA 923
@@ -80,7 +80,7 @@ if __name__ == '__main__':
         try: # get shortened pickeled dictionary if generatorData has already been run for the particular year and region
             # change path to simple dispatch output data folder
             os.chdir(base_dname) 
-            os.chdir("../Data/Simple Dispatch Outputs/Actual Scenario") # where to access output data relative to code folder
+            os.chdir(output_rel_path) # where to access output data relative to code folder
             gd_short = pickle.load(open('generator_data_short_%s_%s.obj'%(nerc_region, str(run_year)), 'rb')) # load generatordata object
         except:
             # run the generator data object
@@ -95,7 +95,7 @@ if __name__ == '__main__':
                                include_easiur_damages=False, # NOTE: we don't use any easiur damages. Variables relating to this have been commented out of the functions
                                year=run_year, 
                                fuel_commodity_prices_excel_dir=fuel_commodity_prices_xlsx, 
-                               hist_downtime=True, # should always be true
+                               hist_downtime=False, # should always be true if trying to exactly match historical data
                                coal_min_downtime = 12, 
                                cems_validation_run=True) # makes sure only CEMS boilers are included in eGRID. We only need CEMS plants
             
@@ -104,7 +104,7 @@ if __name__ == '__main__':
                         'mdt_coal_events': gd.mdt_coal_events, 'df': gd.df}
             # change path to simple dispatch output data folder
             os.chdir(base_dname)
-            os.chdir("../Data/Simple Dispatch Outputs/Actual Scenario") # where to access output data relative to code folder
+            os.chdir(output_rel_path) # where to access output data relative to code folder
             pickle.dump(gd_short, open('generator_data_short_%s_%s.obj'%(nerc_region, str(run_year)), 'wb'))
         
         # save historical actual dispatch
@@ -126,8 +126,9 @@ if __name__ == '__main__':
         #save dispatch results 
         # change path to simple dispatch output data folder
         os.chdir(base_dname)
-        os.chdir("../Data/Simple Dispatch Outputs/Actual Scenario")
+        os.chdir(output_rel_path)
         dp.df.to_csv('simple_dispatch_'+nerc_region+'_'+str(run_year)+'.csv', index=False) # save larger dispatch results
         # save subset results
-        os.chdir("./Dispatch Subset/Raw") 
-        dp.df_subset.to_parquet('simple_dispatch_'+nerc_region+'_'+str(run_year)+'_' + '_'.join(states_to_subset)+'.parquet', index=False)
+        if states_to_subset != []:
+            os.chdir("./Dispatch Subset/Raw") 
+            dp.df_subset.to_parquet('simple_dispatch_'+nerc_region+'_'+str(run_year)+'_' + '_'.join(states_to_subset)+'.parquet', index=False)
