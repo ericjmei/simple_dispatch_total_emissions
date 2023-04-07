@@ -75,6 +75,7 @@ import datetime
 import math
 import copy
 import os
+import warnings
 from bisect import bisect_left
 
 
@@ -670,6 +671,7 @@ class generatorData(object):
         
         ## if we are shifting average fuel prices to some counterfactual value, we will do that here
         if bool(self.avg_price_fuel_type): # execute only if dictionary is not empty
+            
             ## adjust nominal prices to real 2006/01 prices
             # function adjusts nominal dollars of a certain month and year to real 2006/1 dolalrs
             def adjust_to_2006_1_real_dollars(nominal_dollars, year, month):
@@ -682,6 +684,63 @@ class generatorData(object):
             temp_orispl_prices[[i for i in range(1, 13)]] = orispl_prices[range(1, 13)].apply(
                 lambda x: adjust_to_2006_1_real_dollars(x, self.year, x.name)) # adjusts to real 2006 dollars based on current year and month
             
+            ## functions to filter data
+            def mask_outliers(data):
+                """
+                Returns a boolean mask indicating which elements of the input array
+                are outliers according to the modified Z-score method only applied to the upper bound.
+                Note: the minimum value for the upper threshold is 30 $/MWh
+                
+                Parameters
+                ----------
+                data : numpy.ndarray or pandas.Series
+                    The input array of data to test for outliers.
+                threshold : float, optional
+                    The number of scaled MADs above the median at which to define an
+                    outlier. Default is 3.
+                
+                Returns
+                -------
+                mask : numpy.ndarray or pandas.Series
+                    A boolean mask indicating which elements of the input array are
+                    outliers.
+                upper_threshold : float
+                    The upper threshold used to define outliers.
+                """
+                
+                # Calculate median and MAD
+                median = numpy.nanmedian(data)
+                mad = numpy.nanmedian(numpy.abs(data - median))
+
+                # Calculate the threshold for outliers (3 scaled MAD)
+                threshold = 3 * 1.4826 * mad
+
+                # Mask the non-outlier elements
+                # lower_threshold = median - threshold
+                upper_threshold = max(30, median + threshold)
+                mask = (data < 0) | (data > upper_threshold)
+
+                return mask
+
+            def outlier_threshold(data):
+                """
+                Returns upper threshold for data
+                Note: the minimum value for the upper threshold is 10 $/MWh
+                """
+
+                # Calculate median and MAD
+                median = numpy.nanmedian(data)
+                mad = numpy.nanmedian(numpy.abs(data - median))
+
+                # Calculate the threshold for outliers (3 scaled MAD)
+                threshold = 3 * 1.4826 * mad
+                
+                # calculate the upper threshold
+                upper_threshold = max(30, median + threshold)
+                return upper_threshold
+
+            
+            
             ## create a dataframe to hold fuel_price_metrics: number of units, average before, average after, 
             #  average % change, min before, max before, standard deviation
             tuple_list = [] # assemble dataframe columns
@@ -693,12 +752,15 @@ class generatorData(object):
                             tuple_list.append((key, subkey, subvalue))
                     else:
                         tuple_list.append((key, numpy.nan, value))
-            fuel_price_metrics = pandas.DataFrame(tuple_list, columns=["fuel", "purchase_type", "average_after"])
+            fuel_price_metrics = pandas.DataFrame(tuple_list, columns=["fuel", "purchase_type", "average_counterfactual"])
             
-            # Repeat the 'fuel_price_average_before', 'average_percent_change', 'standard_deviation', 
-            # 'min_before', and 'max_before' columns with suffixes from 1 to 12
+            # Repeat the 'fuel_price_average', 'average_percent_change', 'standard_deviation', 
+            # 'min', and 'max' 'upper_threshold_outliers', 'excluded_units', 'excluded_units_fraction', 'average_percent_change_no_outliers'
+            # 'average_no_outliers', 'standard_deviation_no_outliers'columns with suffixes from 1 to 12
             suffixes = [str(i) for i in range(1, 13)]
-            cols_to_repeat = ['average_before', 'average_percent_change', 'standard_deviation', 'min_before', 'max_before']
+            cols_to_repeat = ['average', 'average_percent_change', 'standard_deviation', 'min', 'max', 'upper_threshold_outliers', 
+                              'excluded_units', 'excluded_units_fraction', 'average_no_outliers', 'average_percent_change_no_outliers',
+                              'standard_deviation_no_outliers']
             new_cols = [f"{col}{suffix}" for col in cols_to_repeat for suffix in suffixes]
             new_cols = ['number_of_units'] + new_cols # also append 'number of units' to the list
             fuel_price_metrics = pandas.concat([fuel_price_metrics, pandas.DataFrame(columns=new_cols)]) # append new empty columns
@@ -709,7 +771,7 @@ class generatorData(object):
             f_iter = list(orispl_prices.fuel.unique()) # all types of unique fuels during this period
             for fuel_type in f_iter:
                 if fuel_type not in self.avg_price_fuel_type:
-                    units_not_in_dict = (orispl_prices["fuel"] == fuel_type).sum() # number of units wiht this fuel type
+                    units_not_in_dict = (orispl_prices["fuel"] == fuel_type).sum() # number of units with this fuel type
                     print(fuel_type + " is not in the dictionary of average fuel prices (" 
                           + str(units_not_in_dict) + " units out of " + str(orispl_prices.shape[0])
                           + " total units)")
@@ -728,15 +790,15 @@ class generatorData(object):
                         # mask for fuel price metrics index
                         fuel_price_metrics_row = (fuel_price_metrics['fuel'] == fuel_type) & (fuel_price_metrics['purchase_type'] == purchase_type)
                         
-                        ## calculate 'before' metrics (number of units, average, min, max, standard deviation)
+                        ## calculate 'before' metrics (number of units, average, min, max, standard deviation) with all units
                         fuel_price_metrics.loc[fuel_price_metrics_row, 'number_of_units'] = mask.sum() # number of units
                         temp = temp_orispl_prices.loc[mask, range(1, 13)] # retrieve all price data to manipulate
                         # average before
-                        fuel_price_metrics.loc[fuel_price_metrics_row, [f"average_before{suffix}" for suffix in suffixes]] = temp.mean(axis=0, skipna=True).values
+                        fuel_price_metrics.loc[fuel_price_metrics_row, [f"average{suffix}" for suffix in suffixes]] = temp.mean(axis=0, skipna=True).values
                         # min before
-                        fuel_price_metrics.loc[fuel_price_metrics_row, [f"min_before{suffix}" for suffix in suffixes]] = temp.min(axis=0, skipna=True).values
+                        fuel_price_metrics.loc[fuel_price_metrics_row, [f"min{suffix}" for suffix in suffixes]] = temp.min(axis=0, skipna=True).values
                         # max before
-                        fuel_price_metrics.loc[fuel_price_metrics_row, [f"max_before{suffix}" for suffix in suffixes]] = temp.max(axis=0, skipna=True).values
+                        fuel_price_metrics.loc[fuel_price_metrics_row, [f"max{suffix}" for suffix in suffixes]] = temp.max(axis=0, skipna=True).values
                         # standard deviation 
                         fuel_price_metrics.loc[fuel_price_metrics_row, [f"standard_deviation{suffix}" for suffix in suffixes]] = temp.std(axis=0, skipna=True).values 
                         # calculate average percent change from actual to counterfactual average
@@ -745,8 +807,35 @@ class generatorData(object):
                         avg_shift.replace([numpy.inf, -numpy.inf], numpy.nan, inplace=True) # replace inf if dividing by 0 with nan
                         fuel_price_metrics.loc[fuel_price_metrics_row, [f"average_percent_change{suffix}" for suffix in suffixes]] = avg_shift.values
                         
+                        ## remove outliers, then re-do calculations
+                        with warnings.catch_warnings():
+                            warnings.filterwarnings(action='ignore', category=RuntimeWarning)
+                            # calculate upper threshold for outliers
+                            fuel_price_metrics.loc[fuel_price_metrics_row, [f"upper_threshold_outliers{suffix}" for suffix in suffixes]] = temp.apply(outlier_threshold,
+                                                                                                                                                      axis=0).values
+                            # mask for outliers
+                            outlier_mask = temp.apply(mask_outliers)
+                            temp = temp.where(~outlier_mask, numpy.nan) # change outlier values to nan
+                            # calculate number of units excluded from average
+                            fuel_price_metrics.loc[fuel_price_metrics_row, [f"excluded_units{suffix}" for suffix in suffixes]] = outlier_mask.sum().values
+                            # calculate fraction of units excluded from average
+                            fuel_price_metrics.loc[fuel_price_metrics_row, [f"excluded_units_fraction{suffix}" 
+                                                                            for suffix in suffixes]] = outlier_mask.sum().values/temp.shape[0] if temp.shape[0] else numpy.nan
+                            # average each month
+                            fuel_price_metrics.loc[fuel_price_metrics_row, [f"average_no_outliers{suffix}" for suffix in suffixes]] = temp.mean(
+                                axis=0, skipna=True).values
+                            # standard deviation 
+                            fuel_price_metrics.loc[fuel_price_metrics_row, [f"standard_deviation_no_outliers{suffix}" for suffix in suffixes]] = temp.std(
+                                axis=0, skipna=True).values
+                            # calculate average percent change from actual to counterfactual average
+                            avg_shift = numpy.divide((self.avg_price_fuel_type[fuel_type][purchase_type]
+                                                      - temp.mean(axis=0, skipna=True))*100, temp.mean(axis=0, skipna=True)) # negative if shifting down
+                            avg_shift.replace([numpy.inf, -numpy.inf], numpy.nan, inplace=True) # replace inf if dividing by 0 with nan
+                            fuel_price_metrics.loc[fuel_price_metrics_row, 
+                                                   [f"average_percent_change_no_outliers{suffix}" for suffix in suffixes]] = avg_shift.values
+                        
                         ## perform shift
-                        avg_ratio = self.avg_price_fuel_type[fuel_type][purchase_type]/temp.mean(axis=0, skipna=True) # new average/old average
+                        avg_ratio = self.avg_price_fuel_type[fuel_type][purchase_type]/temp.mean(axis=0, skipna=True) # new average/old average with outliers removed
                         temp_orispl_prices.loc[mask, range(1, 13)] = temp_orispl_prices.loc[mask, range(1, 13)].multiply(avg_ratio, axis=1)
                 else:
                     # mask for units that have matching fuel type
@@ -758,11 +847,11 @@ class generatorData(object):
                     fuel_price_metrics.loc[fuel_price_metrics_row, 'number_of_units'] = mask.sum() # number of units
                     temp = temp_orispl_prices.loc[mask, range(1, 13)] # retrieve all price data to manipulate
                     # average before
-                    fuel_price_metrics.loc[fuel_price_metrics_row, [f"average_before{suffix}" for suffix in suffixes]] = temp.mean(axis=0, skipna=True).values
+                    fuel_price_metrics.loc[fuel_price_metrics_row, [f"average{suffix}" for suffix in suffixes]] = temp.mean(axis=0, skipna=True).values
                     # min before
-                    fuel_price_metrics.loc[fuel_price_metrics_row, [f"min_before{suffix}" for suffix in suffixes]] = temp.min(axis=0, skipna=True).values
+                    fuel_price_metrics.loc[fuel_price_metrics_row, [f"min{suffix}" for suffix in suffixes]] = temp.min(axis=0, skipna=True).values
                     # max before
-                    fuel_price_metrics.loc[fuel_price_metrics_row, [f"max_before{suffix}" for suffix in suffixes]] = temp.max(axis=0, skipna=True).values
+                    fuel_price_metrics.loc[fuel_price_metrics_row, [f"max{suffix}" for suffix in suffixes]] = temp.max(axis=0, skipna=True).values
                     # standard deviation 
                     fuel_price_metrics.loc[fuel_price_metrics_row, [f"standard_deviation{suffix}" for suffix in suffixes]] = temp.std(axis=0, skipna=True).values 
                     # calculate average percent change from actual to counterfactual average
@@ -770,8 +859,35 @@ class generatorData(object):
                     avg_shift.replace([numpy.inf, -numpy.inf], numpy.nan, inplace=True) # replace inf if dividing by 0 with nan
                     fuel_price_metrics.loc[fuel_price_metrics_row, [f"average_percent_change{suffix}" for suffix in suffixes]] = avg_shift.values
                     
+                    ## remove outliers, then re-do calculations
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings(action='ignore', category=RuntimeWarning)
+                        # calculate upper threshold for outliers
+                        fuel_price_metrics.loc[fuel_price_metrics_row, [f"upper_threshold_outliers{suffix}" for suffix in suffixes]] = temp.apply(outlier_threshold,
+                                                                                                                                                  axis=0).values
+                        # mask for outliers
+                        outlier_mask = temp.apply(mask_outliers)
+                        temp = temp.where(~outlier_mask, numpy.nan) # change outlier values to nan
+                        # calculate number of units excluded from average
+                        fuel_price_metrics.loc[fuel_price_metrics_row, [f"excluded_units{suffix}" for suffix in suffixes]] = outlier_mask.sum().values
+                        # calculate fraction of units excluded from average
+                        fuel_price_metrics.loc[fuel_price_metrics_row, [f"excluded_units_fraction{suffix}" 
+                                                                        for suffix in suffixes]] = outlier_mask.sum().values/temp.shape[0] if temp.shape[0] else numpy.nan
+                        # average each month
+                        fuel_price_metrics.loc[fuel_price_metrics_row, [f"average_no_outliers{suffix}" for suffix in suffixes]] = temp.mean(
+                            axis=0, skipna=True).values
+                        # standard deviation 
+                        fuel_price_metrics.loc[fuel_price_metrics_row, [f"standard_deviation_no_outliers{suffix}" for suffix in suffixes]] = temp.std(
+                            axis=0, skipna=True).values
+                        # calculate average percent change from actual to counterfactual average
+                        avg_shift = numpy.divide((self.avg_price_fuel_type[fuel_type]
+                                                  - temp.mean(axis=0, skipna=True))*100, temp.mean(axis=0, skipna=True)) # negative if shifting down
+                        avg_shift.replace([numpy.inf, -numpy.inf], numpy.nan, inplace=True) # replace inf if dividing by 0 with nan
+                        fuel_price_metrics.loc[fuel_price_metrics_row, 
+                                               [f"average_percent_change_no_outliers{suffix}" for suffix in suffixes]] = avg_shift.values
+                    
                     ## perform shift
-                    avg_ratio = self.avg_price_fuel_type[fuel_type]/temp.mean(axis=0, skipna=True) # new average/old average
+                    avg_ratio = self.avg_price_fuel_type[fuel_type]/temp.mean(axis=0, skipna=True) # new average/old average with outliers removed
                     temp_orispl_prices.loc[mask, range(1, 13)] = temp_orispl_prices.loc[mask, range(1, 13)].multiply(avg_ratio, axis=1)
             
             self.fuel_price_metrics = fuel_price_metrics # save metrics

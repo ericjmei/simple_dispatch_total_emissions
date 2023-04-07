@@ -35,7 +35,7 @@ if __name__ == '__main__':
     # easiur data from here: https://barney.ce.cmu.edu/~jinhyok/easiur/online/
     # fuel_default_prices.xlsx compiled from data from https://www.eia.gov/
     input_folder_rel_path = "../Data/Simple Dispatch Inputs" # where to access input data relative to code folder
-    output_rel_path = "../Data/Simple Dispatch Outputs/2023-03-26 Counterfactual Scenario/" # where to save output data
+    output_rel_path = "../Data/Simple Dispatch Outputs/2023-04-05 CF no outliers/" # where to save output data
     ferc714_part2_schedule6_csv = 'Part 2 Schedule 6 - Balancing Authority Hourly System Lambda.csv'
     ferc714IDs_csv= 'Respondent IDs.csv'
     cems_folder_path ='../Data/CAMD/PUDL retrieved hourly' # relative path for all CEMS outputs
