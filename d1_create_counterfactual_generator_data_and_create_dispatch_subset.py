@@ -54,6 +54,9 @@ if __name__ == '__main__':
     ## define NERC regions to run
     # nerc_region_all = ['SERC', 'SERC', 'RFC', 'NPCC']
     nerc_region_all = ['NPCC']
+    nerc_to_state_names = [['MO','AR','LA','MS','TN','KY','IL','VA','AL','GA','SC','NC'],
+                           ['MI','IN','OH','WV','MD','PA','NJ'],
+                           ['NY','CT','DE','RI','MA','VT','NH','ME']]
     ## input dictionary with fuel prices to adjust to (all from c_calculate_actual_average_fuel_prices)
     # these are all from 2006
     avg_price_fuel_type = {'SERC': {'ng': {'all': 8.0479441},
@@ -152,7 +155,8 @@ if __name__ == '__main__':
         # change path to simple dispatch output data folder
         os.chdir(base_dname)
         os.chdir(output_rel_path)
-        dp.df.to_csv('simple_dispatch_'+nerc_region+'_'+str(run_year)+'.csv', index=False) # save larger dispatch results
+        fn = 'simple_dispatch_'+nerc_region+'_'+str(run_year)+'_'+'_'.join(nerc_to_state_names[i])+'.csv' # unique file name for particular NERC region
+        dp.df.to_csv(fn, index=False) # save larger dispatch results
         # save subset results
         if states_to_subset != []:
             os.chdir("./Dispatch Subset/Raw") 

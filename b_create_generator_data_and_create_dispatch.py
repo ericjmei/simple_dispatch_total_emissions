@@ -50,6 +50,10 @@ if __name__ == '__main__':
                             ['NY', 'CT']] # NPCC
     ## define NERC regions to run
     nerc_region_all = ['SERC', 'SERC', 'RFC', 'NPCC']
+    # define NERC states for rename convention
+    nerc_to_state_names = [['MO','AR','LA','MS','TN','KY','IL','VA','AL','GA','SC','NC'],
+                           ['MI','IN','OH','WV','MD','PA','NJ'],
+                           ['NY','CT','DE','RI','MA','VT','NH','ME']]
     
     ## these file paths will change with every year (automatically when run_year is set)
     eia923_schedule5_xlsx = 'EIA923_Schedules_2_3_4_5_M_12_'+str(run_year)+'_Final_Revision.xlsx' # EIA 923
@@ -108,6 +112,8 @@ if __name__ == '__main__':
             pickle.dump(gd_short, open('generator_data_short_%s_%s.obj'%(nerc_region, str(run_year)), 'wb'))
         
         # save historical actual dispatch
+        os.chdir("./Actual CEMS")
+        fn = 'actual_CEMS_'+nerc_region+'_'+str(run_year)+'_'+'_'.join(nerc_to_state_names[i])+'.csv' # unique file name for particular NERC region
         gd_short["hist_dispatch"].to_csv('actual_dispatch_'+nerc_region+'_'+str(run_year)+'.csv', index=False)
         
         states_to_subset = states_to_subset_all[i]
@@ -127,8 +133,9 @@ if __name__ == '__main__':
         # change path to simple dispatch output data folder
         os.chdir(base_dname)
         os.chdir(output_rel_path)
-        dp.df.to_csv('simple_dispatch_'+nerc_region+'_'+str(run_year)+'.csv', index=False) # save larger dispatch results
+        fn = 'simple_dispatch_'+nerc_region+'_'+str(run_year)+'_'+'_'.join(nerc_to_state_names[i])+'.csv' # unique file name for particular NERC region
+        dp.df.to_csv(fn, index=False) # save larger dispatch results
         # save subset results
         if states_to_subset != []:
             os.chdir("./Dispatch Subset/Raw") 
-            dp.df_subset.to_parquet('simple_dispatch_'+nerc_region+'_'+str(run_year)+'_' + '_'.join(states_to_subset)+'.parquet', index=False)
+            dp.df_subset.to_csv('simple_dispatch_'+nerc_region+'_'+str(run_year)+'_' + '_'.join(states_to_subset)+'.csv', index=False)
