@@ -7,6 +7,9 @@ Pre-processes eGRID2005, X, X, and X data to be consistent with eGRID2014+ input
 Prior to 2014, UNT sheet used to be BLR - also, the headings have somewhat changed over the years
 Prime mover is not in the BLR sheet - needs to be matched with the generator sheet
 
+BACODE in plant sheets matched using PCAID for pre-2014 data. Only SOCO, ISNE, PJM, and NYIS included currently, 
+but more can be easily added (perhaps using FERC respondent IDs in Form 714)
+
 @author: emei3
 """
 
@@ -14,9 +17,10 @@ import pandas as pd
 import os
 import numpy as np
 
-#%% helper function to match prime movers to generating units (boilers)
+#%% helper functions 
 
 def matchPrimeMover(df_unt, df_gen):
+    ## match prime movers to generating units (boilers)
     print("matching prime movers to units")
 
     ## match prime mover data to ORISPL unit name
@@ -72,12 +76,23 @@ def matchPrimeMover(df_unt, df_gen):
     
     return temp_df_unt
 
+## fill column with a dictionary value
+def fill_column(row):
+    PCAID_to_BACODE = {18195:"SOCO",
+                       13434:"ISNE",
+                       14725:"PJM",
+                       13501:"NYIS"}
+    if row in PCAID_to_BACODE:
+        return PCAID_to_BACODE[row]
+    else:
+        return None
+
 #%% 2005 eGRID data
 print("processing 2005 eGRID data")
 abspath = os.path.abspath(__file__)
 base_dname = os.path.dirname(abspath)
 os.chdir(base_dname) # change to code directory
-os.chdir("../Data/Simple Dipatch Inputs/Raw")
+os.chdir("../Data/Simple Dispatch Inputs/Raw")
 
 egrid_fname = 'eGRID2005_plant.xls' # 2005-2006 data
 egrid_year_str = '05'
@@ -105,10 +120,11 @@ df_gen = egrid_gen[['ORISPL', 'GENID', 'NAMEPCAP', 'GENNTAN', 'GENYRONL', 'orisp
 ## read in and process plant data
 egrid_plnt = pd.read_excel(egrid_fname, 'PLNT'+egrid_year_str, skiprows=4)
 # retrieve needed columns
-# deviations from 2016: no BACODE (balancing authority code)
-df_plnt = egrid_plnt[['ORISPL', 'PSTATABB', 'NERC', 'SUBRGN', 'PLPRMFL', 'PLFUELCT']]
-# fill in blank column for balancing authority
-df_plnt['BACODE'] = np.nan
+# deviations from 2016: no BACODE (balancing authority code), so add it with PCAID
+df_plnt = egrid_plnt[['ORISPL', 'PSTATABB', 'NERC', 'SUBRGN', 'PLPRMFL', 'PLFUELCT', 'PCAID']]
+# fill column for balancing authority
+df_plnt['BACODE'] = egrid_plnt['PCAID'].apply(lambda x: fill_column(x))
+
 
 ## add in a PRMVR column to unit data using generator data
 df_unt = matchPrimeMover(df_unt, df_gen)
@@ -125,10 +141,8 @@ df_gen.to_parquet('egrid2005_data_GEN.parquet', index=False)
 df_plnt.to_parquet('egrid2005_data_PLNT.parquet', index=False)
 #%% 2007 eGRID data
 print("processing 2007 eGRID data")
-abspath = os.path.abspath(__file__)
-base_dname = os.path.dirname(abspath)
 os.chdir(base_dname) # change to code directory
-os.chdir("../Data/Simple Dipatch Inputs/Raw")
+os.chdir("../Data/Simple Dispatch Inputs/Raw")
 
 egrid_fname = 'eGRID2007_plant.xls' # 2007-2008 data
 egrid_year_str = '07'
@@ -156,9 +170,9 @@ df_gen = egrid_gen[['ORISPL', 'GENID', 'NAMEPCAP', 'GENNTAN', 'GENYRONL', 'orisp
 egrid_plnt = pd.read_excel(egrid_fname, 'PLNT'+egrid_year_str, skiprows=4)
 # retrieve needed columns
 # deviations from 2016: no BACODE (balancing authority code)
-df_plnt = egrid_plnt[['ORISPL', 'PSTATABB', 'NERC', 'SUBRGN', 'PLPRMFL', 'PLFUELCT']]
-# fill in blank column for balancing authority
-df_plnt.loc[:, 'BACODE'] = np.nan
+df_plnt = egrid_plnt[['ORISPL', 'PSTATABB', 'NERC', 'SUBRGN', 'PLPRMFL', 'PLFUELCT', 'PCAID']]
+# fill column for balancing authority
+df_plnt['BACODE'] = egrid_plnt['PCAID'].apply(lambda x: fill_column(x))
 
 ## add in a PRMVR column to unit data using generator data
 df_unt = matchPrimeMover(df_unt, df_gen)
@@ -178,7 +192,7 @@ print("processing 2009 eGRID data")
 abspath = os.path.abspath(__file__)
 base_dname = os.path.dirname(abspath)
 os.chdir(base_dname) # change to code directory
-os.chdir("../Data/Simple Dipatch Inputs/Raw")
+os.chdir("../Data/Simple Dispatch Inputs/Raw")
 
 egrid_fname = 'eGRID2009_data.xls' # 2009 data
 egrid_year_str = '09'
@@ -206,9 +220,9 @@ df_gen = egrid_gen[['ORISPL', 'GENID', 'NAMEPCAP', 'GENNTAN', 'GENYRONL', 'orisp
 egrid_plnt = pd.read_excel(egrid_fname, 'PLNT'+egrid_year_str, skiprows=4)
 # retrieve needed columns
 # deviations from 2016: no BACODE (balancing authority code)
-df_plnt = egrid_plnt[['ORISPL', 'PSTATABB', 'NERC', 'SUBRGN', 'PLPRMFL', 'PLFUELCT']]
-# fill in blank column for balancing authority
-df_plnt.loc[:, 'BACODE'] = np.nan
+df_plnt = egrid_plnt[['ORISPL', 'PSTATABB', 'NERC', 'SUBRGN', 'PLPRMFL', 'PLFUELCT', 'PCAID']]
+# fill column for balancing authority
+df_plnt['BACODE'] = egrid_plnt['PCAID'].apply(lambda x: fill_column(x))
 
 ## add in a PRMVR column to unit data using generator data
 df_unt = matchPrimeMover(df_unt, df_gen)
@@ -228,7 +242,7 @@ print("processing 2010 eGRID data")
 abspath = os.path.abspath(__file__)
 base_dname = os.path.dirname(abspath)
 os.chdir(base_dname) # change to code directory
-os.chdir("../Data/Simple Dipatch Inputs/Raw")
+os.chdir("../Data/Simple Dispatch Inputs/Raw")
 
 egrid_fname = 'eGRID2010_Data.xls' # 2010-2011 data
 egrid_year_str = '10'
@@ -256,9 +270,9 @@ df_gen = egrid_gen[['ORISPL', 'GENID', 'NAMEPCAP', 'GENNTAN', 'GENYRONL', 'orisp
 egrid_plnt = pd.read_excel(egrid_fname, 'PLNT'+egrid_year_str, skiprows=4)
 # retrieve needed columns
 # deviations from 2016: no BACODE (balancing authority code)
-df_plnt = egrid_plnt[['ORISPL', 'PSTATABB', 'NERC', 'SUBRGN', 'PLPRMFL', 'PLFUELCT']]
-# fill in blank column for balancing authority
-df_plnt.loc[:, 'BACODE'] = np.nan
+df_plnt = egrid_plnt[['ORISPL', 'PSTATABB', 'NERC', 'SUBRGN', 'PLPRMFL', 'PLFUELCT', 'PCAID']]
+# fill column for balancing authority
+df_plnt['BACODE'] = egrid_plnt['PCAID'].apply(lambda x: fill_column(x))
 
 ## add in a PRMVR column to unit data using generator data
 df_unt = matchPrimeMover(df_unt, df_gen)
@@ -278,7 +292,7 @@ print("processing 2012 eGRID data")
 abspath = os.path.abspath(__file__)
 base_dname = os.path.dirname(abspath)
 os.chdir(base_dname) # change to code directory
-os.chdir("../Data/Simple Dipatch Inputs/Raw")
+os.chdir("../Data/Simple Dispatch Inputs/Raw")
 
 egrid_fname = 'eGRID2012_Data.xlsx' # 2012-2013 data
 egrid_year_str = '12'
@@ -306,9 +320,9 @@ df_gen = egrid_gen[['ORISPL', 'GENID', 'NAMEPCAP', 'GENNTAN', 'GENYRONL', 'orisp
 egrid_plnt = pd.read_excel(egrid_fname, 'PLNT'+egrid_year_str, skiprows=4)
 # retrieve needed columns
 # deviations from 2016: no BACODE (balancing authority code)
-df_plnt = egrid_plnt[['ORISPL', 'PSTATABB', 'NERC', 'SUBRGN', 'PLPRMFL', 'PLFUELCT']]
-# fill in blank column for balancing authority
-df_plnt.loc[:, 'BACODE'] = np.nan
+df_plnt = egrid_plnt[['ORISPL', 'PSTATABB', 'NERC', 'SUBRGN', 'PLPRMFL', 'PLFUELCT', 'PCAID']]
+# fill column for balancing authority
+df_plnt['BACODE'] = egrid_plnt['PCAID'].apply(lambda x: fill_column(x))
 
 ## add in a PRMVR column to unit data using generator data
 df_unt = matchPrimeMover(df_unt, df_gen)

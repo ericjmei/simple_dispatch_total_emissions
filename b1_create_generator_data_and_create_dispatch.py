@@ -108,13 +108,13 @@ if __name__ == '__main__':
                         'mdt_coal_events': gd.mdt_coal_events, 'df': gd.df}
             # change path to simple dispatch output data folder
             os.chdir(base_dname)
-            os.chdir(output_rel_path) # where to access output data relative to code folder
+            os.chdir(output_rel_path+'/Generator Data') # where to access output data relative to code folder
             pickle.dump(gd_short, open('generator_data_short_%s_%s.obj'%(nerc_region, str(run_year)), 'wb'))
         
         # save historical actual dispatch
-        os.chdir("./Actual CEMS")
-        fn = 'actual_CEMS_'+nerc_region+'_'+str(run_year)+'_'+'_'.join(nerc_to_state_names[i])+'.csv' # unique file name for particular NERC region
-        gd_short["hist_dispatch"].to_csv('actual_dispatch_'+nerc_region+'_'+str(run_year)+'.csv', index=False)
+        os.chdir("../Actual CEMS")
+        fn = 'actual_CEMS_'+nerc_region+'_'+'_'.join(nerc_to_state_names[i])+'_'+str(run_year)+'.csv' # unique file name for particular NERC region
+        gd_short["hist_dispatch"].to_csv(fn, index=False)
         
         states_to_subset = states_to_subset_all[i]
         ## create bidStack object and save merit order figures
@@ -133,9 +133,8 @@ if __name__ == '__main__':
         # change path to simple dispatch output data folder
         os.chdir(base_dname)
         os.chdir(output_rel_path)
-        fn = 'simple_dispatch_'+nerc_region+'_'+str(run_year)+'_'+'_'.join(nerc_to_state_names[i])+'.csv' # unique file name for particular NERC region
+        fn = 'simple_dispatch_'+nerc_region+'_'+'_'.join(nerc_to_state_names[i])+'_'+str(run_year)+'.csv' # unique file name for particular NERC region
         dp.df.to_csv(fn, index=False) # save larger dispatch results
         # save subset results
         if states_to_subset != []:
-            os.chdir("./Dispatch Subset/Raw") 
-            dp.df_subset.to_csv('simple_dispatch_'+nerc_region+'_'+str(run_year)+'_' + '_'.join(states_to_subset)+'.csv', index=False)
+            dp.df_subset.to_csv('simple_dispatch_'+nerc_region+'_' + '_'.join(states_to_subset)+'_'+str(run_year)+'.csv', index=False)

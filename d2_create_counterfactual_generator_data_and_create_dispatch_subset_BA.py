@@ -46,33 +46,35 @@ if __name__ == '__main__':
     ## specify run year
     run_year = 2018
     ## define states to subset
-    # states_to_subset_all = [['GA'], # SERC
-    #                         ['GA', 'AL', 'TN'], # SERC
-    #                         [], # RFC
-    #                         ['NY', 'CT']] # NPCC
-    states_to_subset_all = [['NY', 'CT']]
-    ## define NERC regions to run
-    # nerc_region_all = ['SERC', 'SERC', 'RFC', 'NPCC']
-    nerc_region_all = ['NPCC']
-    nerc_to_state_names = [['MO','AR','LA','MS','TN','KY','IL','VA','AL','GA','SC','NC'],
-                           ['MI','IN','OH','WV','MD','PA','NJ'],
-                           ['NY','CT','DE','RI','MA','VT','NH','ME']]
+    states_to_subset_all = [['GA', 'AL'], # SOCO
+                            ['PA', 'NJ', 'DE', 'WV', 'OH', 'IL', 'NC', 'IN'], # PJM
+                            ['CT'], # ISNE
+                            ['NY']] # NYIS
+    ## define balancing authority regions to be run
+    ba_region_all = ['SOCO', 'PJM', 'ISNE', 'NYIS']
+    # define NERC regions that are parallel to balancing authority regions to be run
+    nerc_region_all = ['SERC', 'RFC', 'NPCC', 'NPCC']
+    # define NERC states for rename convention
+    ba_to_state_names = [['GA','AL','FL','MS'],
+                          ['PA', 'NJ', 'DE', 'MD', 'VA', 'WV', 'OH', 'KY', 'MI', 'IL', 'NC', 'IN'],
+                          ['ME', 'NH', 'VT', 'MA', 'CT', 'RI'],
+                          ['NY']] 
     ## input dictionary with fuel prices to adjust to (all from c_calculate_actual_average_fuel_prices)
     # these are all from 2006
-    avg_price_fuel_type = {'SERC': {'ng': {'all': 8.0479441},
+    avg_price_fuel_type = {'SOCO': {'ng': {'all': 7.386070104},
                                     'sc': 2.573433266,
-                                    'bit': 2.32487394,
-                                    'sub': 1.275044486},
-                           'RFC': {'ng': {'all': 8.605154146},
+                                    'bit': 2.535745655,
+                                    'sub': 1.773061971},
+                           'PJM': {'ng': {'all': 8.353798136},
                                    'sc': 1.687676148,
-                                   'bit': 1.86386327,
-                                   'sub': 1.344957189},
-                           'NPCC': {'ng': {'all': 8.401627014},
-                                   'bit': 2.484890813,
+                                   'bit': 2.001658316,
+                                   'sub': 1.431672396},
+                           'ISNE': {'ng': {'all': 7.579613418},
+                                   'bit': 2.690860228,
                                    'sub': 1.288535514},
-                           'WECC': {'ng': {'all': 7.066980567},
-                                   'bit': 1.443140316,
-                                   'sub': 1.293032933}}
+                           'NYIS': {'ng': {'all': 8.430157907},
+                                   'bit': 2.2435368,
+                                   'sub': 1.288535514}}
     
     ## these file paths will change with every year (automatically when run_year is set)
     eia923_schedule5_xlsx = 'EIA923_Schedules_2_3_4_5_M_12_'+str(run_year)+'_Final_Revision.xlsx' # EIA 923
@@ -97,17 +99,17 @@ if __name__ == '__main__':
         egrid_data_xlsx = 'egrid2019_data.xlsx'
     
     
-    for i, nerc_region in enumerate(nerc_region_all):
+    for i, region in enumerate(ba_region_all):
         
         ## create/retrieve simple generator dispatch object
         try: # get shortened pickeled dictionary if generatorData has already been run for the particular year and region
             # change path to simple dispatch output data folder
             os.chdir(base_dname) 
             os.chdir(output_rel_path) # where to access output data relative to code folder
-            gd_short = pickle.load(open('counterfactual_generator_data_short_%s_%s.obj'%(nerc_region, str(run_year)), 'rb')) # load generatordata object
+            gd_short = pickle.load(open('counterfactual_generator_data_short_%s_%s.obj'%(region, str(run_year)), 'rb')) # load generatordata object
         except:
             # run the generator data object
-            gd = generatorData(nerc_region, 
+            gd = generatorData(nerc_region_all[i], 
                                input_folder_rel_path=input_folder_rel_path,
                                egrid_fname=egrid_data_xlsx, 
                                eia923_fname=eia923_schedule5_xlsx, 
@@ -121,7 +123,7 @@ if __name__ == '__main__':
                                hist_downtime=True, # should always be true
                                coal_min_downtime = 12, 
                                cems_validation_run=True, # makes sure only CEMS boilers are included in eGRID. We only need CEMS plants
-                               avg_price_fuel_type=avg_price_fuel_type[nerc_region],
+                               avg_price_fuel_type=avg_price_fuel_type[region],
                                CPI=CPI_path) 
             
             # pickle the trimmed version of the generator data object
@@ -131,13 +133,13 @@ if __name__ == '__main__':
             os.chdir(base_dname)
             os.chdir(output_rel_path) # where to access output data relative to code folder
             os.chdir('./Generator Data')
-            pickle.dump(gd_short, open('counterfactual_generator_data_short_%s_%s.obj'%(nerc_region, str(run_year)), 'wb'))
+            pickle.dump(gd_short, open('counterfactual_generator_data_short_%s_%s.obj'%(region, str(run_year)), 'wb'))
         
         # save fuel price metrics
         os.chdir(base_dname)
         os.chdir(output_rel_path)
         os.chdir('./Fuel Price Metrics')
-        gd_short['fuel_price_metrics'].to_csv('counterfactual_fuel_price_metrics_'+nerc_region+'_'+str(run_year)+'.csv', index=False)
+        gd_short['fuel_price_metrics'].to_csv('counterfactual_fuel_price_metrics_'+region+'_'+str(run_year)+'.csv', index=False)
         
         states_to_subset = states_to_subset_all[i]
         ## create bidStack object and save merit order figures
@@ -156,8 +158,8 @@ if __name__ == '__main__':
         # change path to simple dispatch output data folder
         os.chdir(base_dname)
         os.chdir(output_rel_path)
-        fn = 'simple_dispatch_'+nerc_region+'_'+'_'.join(nerc_to_state_names[i])+'_'+str(run_year)+'.csv' # unique file name for particular NERC region
+        fn = 'simple_dispatch_'+region+'_'+'_'.join(ba_to_state_names[i])+'_'+str(run_year)+'.csv' # unique file name for particular region
         dp.df.to_csv(fn, index=False) # save larger dispatch results
         # save subset results
         if states_to_subset != []:
-            dp.df_subset.to_parquet('simple_dispatch_'+nerc_region+'_' + '_'.join(states_to_subset)+'_'+str(run_year)+'.parquet', index=False)
+            dp.df_subset.to_parquet('simple_dispatch_'+region+'_' + '_'.join(states_to_subset)+'_'+str(run_year)+'.parquet', index=False)

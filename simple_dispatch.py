@@ -63,6 +63,7 @@
 # v28:
 # added capability to subset total emissions from groups of states within the NERC regions simulated
 # added capability to create counterfactual generatorData object that is adjusted to specified average annual fuel price
+# model can now run balancing authority regions as well as NERC regions; model regions will need to be added (only has SOCO, PJM, NYIS, and ISNE currently)
 
 
 
@@ -83,7 +84,7 @@ from bisect import bisect_left
 class generatorData(object):
     def __init__(self, nerc, egrid_fname, input_folder_rel_path, eia923_fname, ferc714_fname='', ferc714IDs_fname='', cems_folder='', easiur_fname='', 
                  include_easiur_damages=False, year=2017, fuel_commodity_prices_excel_dir='', hist_downtime = True, coal_min_downtime = 12, cems_validation_run=True,
-                 avg_price_fuel_type={}, CPI=''):
+                 avg_price_fuel_type={}, CPI='', ba_code=''):
         """ 
         Translates the CEMS, eGrid, FERC, and EIA data into a dataframe for feeding into the bidStack class
         ---
@@ -105,6 +106,8 @@ class generatorData(object):
         CPI : consumer price index file name that spans the time period of interest from https://fred.stlouisfed.org/series/CPIAUCSL
             NOTE: you don't actually need this unless you're interested in the real dollar adjustment in fuel prices
                 the relative positions of generators will shift proportionally to the fuel prices set in avg_price_fuel_type
+        ba_code: balancing authority code to run in lieu of NERC regions. NERC region still needs to be inputted for addElecPriceToDemandData(), but it won't
+            have an overall impact on the emissions generated. Only has SOCO, ISNE, PJM, and NYIS so far, but more can be added easily
         """
         ## read in the data
         
@@ -116,6 +119,7 @@ class generatorData(object):
         
         # edited to parquet files upon first read - this makes the entire process much faster on subsequent runs
         self.nerc = nerc
+        self.ba_code = ba_code
         egrid_year_str = egrid_fname[7:9] #grab last two digits of egrid year; NOTE: file name must be XXXXXXX14XX..., etc.
         print('Reading in unit level data from eGRID...')
         try:
@@ -239,8 +243,11 @@ class generatorData(object):
         df = df.merge(df_gen, how='left', on='orispl_unit')
         df = df.merge(df_plnt, how='left', on='orispl')  
         df = df.merge(df_plnt_fuel, how='left', on='fuel')  
-        # keep only the units in the nerc region we're analyzing
-        df = df[df.nerc == self.nerc]
+        # keep only the units in the nerc/balancing authority region we're analyzing
+        if self.ba_code == '':
+            df = df[df.nerc == self.nerc]
+        else:
+            df = df[df.ba == self.ba_code]
         
         ## calculate the emissions rates # NOTE: double check that eGRID units in tons
         with numpy.errstate(divide='ignore'):
@@ -265,15 +272,20 @@ class generatorData(object):
         #actual hourly performance of the generator units that we can use to calculate their operational characteristics. 
         #eGRID is reported on an annual basis and might be averaged out in different ways than we would prefer.)
         print('Compiling CEMS data...')
-        #dictionary of which states are in which nerc region (b/c CEMS file downloads have the state in the filename)
+        #dictionary of which states are in which nerc/balancing authority region (b/c CEMS file downloads have the state in the filename)
         states = {'FRCC': ['fl'], 
                   'WECC': ['ca','or','wa', 'nv','mt','id','wy','ut','co','az','nm','tx'],
                   'SPP' : ['nm','ks','tx','ok','la','ar','mo'],
-                  'RFC' : ['mi','in','oh','wv','md','pa','nj'], # removed IL, KY, WI, and VA from here bc on boundary of region
+                  'RFC' : ['mi','in','oh','wv','md','pa','nj', 'il', 'ky', 'wi', 'va'],
                   'NPCC' : ['ny','ct','de','ri','ma','vt','nh','me'],
-                  'SERC' : ['mo','ar','tx','la','ms','tn','ky','il','va','al','ga','sc','nc'], # removed FL bc on boundary of region
+                  'SERC' : ['mo','ar','la','ms','tn','ky','il','va','al','ga','sc','nc', 'tx', 'fl'],
                   'MRO': ['ia','il','mi','mn','mo','mt','nd','ne','sd','wi','wy'], 
-                  'TRE': ['ok','tx']}
+                  'TRE': ['ok','tx'],
+                  # balancing authorities
+                  'SOCO': ['GA','AL','FL','MS'],
+                  'PJM': ['PA', 'NJ', 'DE', 'MD', 'VA', 'WV', 'OH', 'KY', 'MI', 'IL', 'NC', 'IN'],
+                  'ISNE': ['ME', 'NH', 'VT', 'MA', 'RI', 'CT'],
+                  'NYIS': ['NY']}
         #compile the different months of CEMS files into one dataframe, df_cems. 
         df_cems = pandas.DataFrame()
         # change to correct data path
@@ -281,7 +293,12 @@ class generatorData(object):
         dname = os.path.dirname(abspath)
         os.chdir(dname)
         os.chdir(self.cems_folder) # relative folder path from input
-        for s in states[self.nerc]:
+        if self.ba_code == '':
+            states_to_retrieve = states[self.nerc]
+        else:
+            states_to_retrieve = states[self.ba_code]
+        
+        for s in states_to_retrieve:
             state = s.upper() # for data reading purposes
             print("processing CEMS data from " + state + " for " + str(self.year))
             
@@ -306,9 +323,12 @@ class generatorData(object):
             
         #create the 'orispl_unit' column, which combines orispl and unit into a unique tag for each generation unit
         df_cems['orispl_unit'] = df_cems['orispl'].map(str) + '_' + df_cems['unit'].map(str)
-        #bring in geography data and only keep generators within self.nerc
-        df_cems = df_cems.merge(df_plnt, how='left', on='orispl') # data such as egrid subregion and balancing authority
-        df_cems = df_cems[df_cems['nerc']==self.nerc] 
+        #bring in geography data and only keep generators within NERC/balancing authority region
+        df_cems = df_cems.merge(df_plnt, how='left', on='orispl') # add data such as egrid subregion and balancing authority
+        if self.ba_code == '':
+            df_cems = df_cems[df_cems['nerc']==self.nerc] 
+        else:
+            df_cems = df_cems[df_cems['ba']==self.ba_code] 
         #convert emissions to kg; NOTE: double check units!
         df_cems.co2_tot = df_cems.co2_tot * 907.185 #tons to kg
         df_cems.so2_tot = df_cems.so2_tot * 0.454 #lbs to kg
@@ -353,7 +373,10 @@ class generatorData(object):
         #To remove these, we will remove any datapoints where mwh < 10.0 and heat_rate < 30.0 (0.5% percentiles of the 2014 TRE data).
         percRemoved = ((df_orispl_unit.shape[0] - sum((df_orispl_unit.mwh >= 10.0) & (df_orispl_unit.heat_rate <= 30.0)))
                        *100/df_orispl_unit.shape[0]) # percent of data that are outliers and will be removed
-        print(str(percRemoved)+"% data removed from "+self.nerc+" because <10 Mwh or <30 mmbtu")
+        if self.ba_code == '':
+            print(str(percRemoved)+"% data removed from "+self.nerc+" because <10 Mwh or <30 mmbtu")
+        else:
+            print(str(percRemoved)+"% data removed from "+self.ba_code+" because <10 Mwh or <30 mmbtu")
         df_orispl_unit = df_orispl_unit[(df_orispl_unit.mwh >= 10.0) & (df_orispl_unit.heat_rate <= 30.0)]
         #aggregate by orispl_unit and t to get the heat rate, emissions rates, and capacity for each unit at each t
         # NOTE need to add numeric_only spec, make sure same output
@@ -369,7 +392,7 @@ class generatorData(object):
             temp_3 = temp_2.set_index(['orispl_unit', 't'])[c].unstack().reset_index() # makes matrix; rows are orispl_unit and columns are X variable for each week
             temp_3.columns = list(['orispl_unit']) + ([c + str(a) for a in numpy.arange(52)+1]) # make sure naming convention correct
             if not self.hist_downtime: ## if we want to use the max MW for unit capacity instead of total
-                #remove any outlier values in the 1st or 99th percentiles; NOTE: I think this removes too many values
+                #remove any outlier values in the 1st or 99th percentiles
                 max_array = temp_3.copy().drop(columns='orispl_unit').quantile(0.99, axis=1) # max in any row
                 min_array = temp_3.copy().drop(columns='orispl_unit').quantile(0.01, axis=1) # min in any row
                 median_array = temp_3.copy().drop(columns='orispl_unit').median(axis=1) # median in any row
@@ -382,7 +405,7 @@ class generatorData(object):
                     if math.isnan(test[0]):
                         test[0] = median_array[i]
                     test.insert(0, temp_3.iloc[i].orispl_unit) # adds unit name to list
-                    temp_3.iloc[i] = test # shuffles 
+                    temp_3.iloc[i] = test 
                     
             #for any nan values (assuming these are offline generators without any output data), 
             #fill nans with a large heat_rate that will move the generator towards the end of the merit order and large-ish emissions rate, so if the generator is dispatched in the model
@@ -599,19 +622,20 @@ class generatorData(object):
                     #uniformly distributing the available EIA923 fuel price profiles to generators without fuel price data
                     loop = 0
                     loop_len = len(orispl_prices_filled) - 1 # ensure looping forwards from generating units with EIA923 price data
-                    for o in orispl_prices_empty.orispl.unique(): # loop through ORISPL units with some EIA data but no prices
-                        orispl_prices.loc[(orispl_prices.orispl==o) 
-                                          & (orispl_prices.fuel==f), 
-                                          orispl_prices.columns
-                                          .difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])] = numpy.array(
-                                              orispl_prices_filled[orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])]
-                                              .iloc[loop]) * multiplier # populate monthly fuel price columns of generator with 0 data with the first generator with actual non-zero and non-nan data
-                        #keep looping through the generators with eia923 price data until we have used all of their fuel price profiles, 
-                        #then start again from the beginning of the loop with the plant with the highest energy production
-                        if loop < loop_len:
-                            loop += 1
-                        else:
-                            loop = 0                
+                    if loop_len != -1: # stops prematurely if there are no filled prices of that specific contract type
+                        for o in orispl_prices_empty.orispl.unique(): # loop through ORISPL units with some EIA data but no prices
+                            orispl_prices.loc[(orispl_prices.orispl==o) 
+                                              & (orispl_prices.fuel==f), 
+                                              orispl_prices.columns
+                                              .difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])] = numpy.array(
+                                                  orispl_prices_filled[orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])]
+                                                  .iloc[loop]) * multiplier # populate monthly fuel price columns of generator with 0 data with the first generator with actual non-zero and non-nan data
+                            #keep looping through the generators with eia923 price data until we have used all of their fuel price profiles, 
+                            #then start again from the beginning of the loop with the plant with the highest energy production
+                            if loop < loop_len:
+                                loop += 1
+                            else:
+                                loop = 0                
                 #for nan prices (those without any EIA923 information) use Spot, Contract, and Tolling Prices (i.e. all of the non-nan prices) 
                 #update orispl_prices_filled to include the updated generators with previously 0 fuel price data
                 orispl_prices_filled_new = orispl_prices[(orispl_prices.fuel==f) & (orispl_prices[1] != 0.0)].dropna().drop_duplicates(subset='orispl', keep='first').sort_values('quantity', ascending=0)
@@ -644,17 +668,18 @@ class generatorData(object):
                 #we will use the plant with the highest energy production first, assigning its fuel price profile 
                 #to one of the generators that does not have EIA923 data. We will move on to plant with the next highest energy production
                 #and so on, uniformly distributing the available EIA923 fuel price profiles to generators without fuel price data
-                for o in numpy.concatenate((orispl_prices_empty.orispl.unique(),orispl_prices_nan.orispl.unique())):
-                    orispl_prices.loc[(orispl_prices.orispl==o) & (orispl_prices.fuel==f), 
-                                      orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])] = numpy.array(
-                                          orispl_prices_filled[orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])]
-                                          .iloc[loop]) * multiplier
-                    #keep looping through the generators with eia923 price data until we have used all of their fuel price profiles, 
-                    # then start again from the beginning of the loop with the plant with the highest energy production
-                    if loop < loop_len:
-                        loop += 1
-                    else:
-                        loop = 0
+                if loop_len != -1: # stops prematurely if there are no filled prices of that specific fuel type
+                    for o in numpy.concatenate((orispl_prices_empty.orispl.unique(),orispl_prices_nan.orispl.unique())):
+                        orispl_prices.loc[(orispl_prices.orispl==o) & (orispl_prices.fuel==f), 
+                                          orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])] = numpy.array(
+                                              orispl_prices_filled[orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])]
+                                              .iloc[loop]) * multiplier
+                        #keep looping through the generators with eia923 price data until we have used all of their fuel price profiles, 
+                        # then start again from the beginning of the loop with the plant with the highest energy production
+                        if loop < loop_len:
+                            loop += 1
+                        else:
+                            loop = 0
         
         #and now we may have some nan values for fuel types that had no nerc_region eia923 data. We'll start with the national median for the EIA923 data.
         f_array = numpy.intersect1d(orispl_prices[orispl_prices[1].isna()].fuel.unique(), df.fuel[~df.fuel.isna()].unique())
@@ -911,7 +936,10 @@ class generatorData(object):
         f_array = orispl_prices[orispl_prices['fuel_price1'].isna()].fuel.unique() # identify any remaining fuels with nan prices
         percNan = ((orispl_prices[orispl_prices['fuel_price1'].isna()].shape[0])
                        *100/orispl_prices.shape[0]) # percent of data that are outliers and will be removed
-        print(str(percNan)+"% generators from "+self.nerc+" have no EIA fuel price data")
+        if self.ba_code == '':
+            print(str(percNan)+"% generators from "+self.nerc+" have no EIA fuel price data")
+        else:
+            print(str(percNan)+"% generators from "+self.ba_code+" have no EIA fuel price data")
         print("the fuels that need to be manually filled are "+', '.join(f_array))
         for f in f_array:
             l = len(orispl_prices.loc[orispl_prices.fuel==f, orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel'])])
@@ -1952,6 +1980,11 @@ class bidStack(object):
              'rc': {'st': '#252525'}, # refined coal
              'rfo': {'st': '#D0F43B'}, # residual oil
              'dfo': {'st': '#47EDFA'}} # distillate oil # SC (syncoal) & og ("other" gas) still not represented
+        labels = {'sub_st': 'Subbituminous Coal',
+                  'bit_st': 'Bituminous Coal',
+                  'ng_ct': 'Natural Gas Combined Cycle',
+                  'ng_st': 'Natural Gas Steam Turbine',
+                  'ng_gt': 'Natural Gas Combustion Turbine'}
                     
         bs_df_fuel_color['fuel_color'] = '#bcbddc' # default color
         for c_key in c.keys():
@@ -1992,11 +2025,16 @@ class bidStack(object):
             if show_legend:
                 color_legend = []
                 for c in bs_df_fuel_color.fuel_color.unique():
-                    color_legend.append(matplotlib.patches.Patch(color=c, 
-                                                                 label=bs_df_fuel_color.fuel[bs_df_fuel_color.fuel_color==c].iloc[0] 
-                                                                 + '_' + bs_df_fuel_color.prime_mover[bs_df_fuel_color.fuel_color==c].iloc[0]))
-                ax.legend(handles=color_legend, bbox_to_anchor=(0.5, 1.2), loc='upper center', 
-                          ncol=3, fancybox=True, shadow=True) # empty ('_') will be ignored
+                    # color_legend.append(matplotlib.patches.Patch(color=c, 
+                    #                                              label=bs_df_fuel_color.fuel[bs_df_fuel_color.fuel_color==c].iloc[0] 
+                    #                                              + '_' + bs_df_fuel_color.prime_mover[bs_df_fuel_color.fuel_color==c].iloc[0]))
+                    orig_label = (bs_df_fuel_color.fuel[bs_df_fuel_color.fuel_color==c].iloc[0] 
+                                  + '_' + bs_df_fuel_color.prime_mover[bs_df_fuel_color.fuel_color==c].iloc[0])
+                    if orig_label in labels:
+                        color_legend.append(matplotlib.patches.Patch(color=c, 
+                                                                     label=labels[orig_label]))
+                ax.legend(handles=color_legend, bbox_to_anchor=(0.5,1.5), loc='upper center', 
+                          ncol=2, fancybox=False, shadow=False) # empty ('_') will be ignored
         else:
             print('***Error: enter valid argument for plot_type')
             pass
@@ -2005,14 +2043,17 @@ class bidStack(object):
         ax.set_xlim(0, self.hist_dispatch.demand.quantile(0.975)*0.001) #take 0 and the 97.5th percentiles for the x limits
         if df_column == 'gen_cost':
             if production_cost_only:
-                ax.set_ylim(0, 65)
-                ax.set_yticks((0, 15, 30, 45, 60))
+                ax.set_ylim(0, 90)
+                ax.set_yticks((0, 15, 30, 45, 60, 75, 90))
             if not production_cost_only:
                 ax.set_ylim(0, 160)
                 ax.set_yticks((0, 30, 60, 90, 120, 150))    
         if df_column == 'co2':
             ax.set_ylim(0, 1300)
             ax.set_yticks((250, 500, 750, 1000, 1250))
+        if df_column == 'so2':
+            ax.set_ylim(0, 15)
+            ax.set_yticks((0, 3, 6, 9, 12, 15))
         matplotlib.pylab.xlabel('Generation [GW]')
         matplotlib.pylab.ylabel(y_lab)
         matplotlib.pylab.tight_layout()

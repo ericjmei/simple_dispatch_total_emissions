@@ -17,11 +17,11 @@ import pickle
 
 ##inputs
 input_folder_rel_path = "../Data/Simple Dispatch Inputs" # where to access input data relative to code folder
-output_folder_actual_gd_rel_path = "../Data/Simple Dispatch Outputs/2023-03-23 Actual Scenario"
-output_folder_rel_path = "../Data/Simple Dispatch Outputs/Fuel Price Metrics/Actual"
+output_folder_actual_gd_rel_path = "../Data/Simple Dispatch Outputs/2023-04-18 act ba regions/Generator Data"
+output_folder_rel_path = "../Data/Simple Dispatch Outputs/Fuel Price Metrics/6. ba regions"
 CPI_path = 'CPI-U_for_inflation.csv' # consumer price index data
-nerc_region_all = ['SERC', 'RFC', 'NPCC', 'WECC']
-years = range(2006, 2020)
+region_all = ['SOCO', 'ISNE', 'PJM', 'NYIS']
+years = range(2016, 2020)
 
 ## import consumer price index
 # obtain code directory name for future folder changing
@@ -46,7 +46,7 @@ def adjust_to_2006_1_real_dollars(nominal_dollars, year, month):
 # run for all years and NERC regions
 for year in years:
     
-    for nerc_region in nerc_region_all:
+    for region in region_all:
         os.chdir(base_dname)  # change to code directory
         os.chdir(input_folder_rel_path)
         
@@ -58,7 +58,7 @@ for year in years:
         # df of fuel prices
         os.chdir(base_dname)  # change to code directory
         os.chdir(output_folder_actual_gd_rel_path)
-        gd_short = pickle.load(open('generator_data_short_%s_%s.obj'%(nerc_region, str(year)), 'rb')) # load generatordata object
+        gd_short = pickle.load(open('generator_data_short_%s_%s.obj'%(region, str(year)), 'rb')) # load generatordata object
         
         ### taken pretty much exactly from the calcFuelPrices function in generatorData
         #we use eia923, where generators report their fuel purchases 
@@ -146,19 +146,20 @@ for year in years:
                     #uniformly distributing the available EIA923 fuel price profiles to generators without fuel price data
                     loop = 0
                     loop_len = len(orispl_prices_filled) - 1 # ensure looping forwards from generating units with EIA923 price data
-                    for o in orispl_prices_empty.orispl.unique(): # loop through ORISPL units with some EIA data but no prices
-                        orispl_prices.loc[(orispl_prices.orispl==o) 
-                                          & (orispl_prices.fuel==f), 
-                                          orispl_prices.columns
-                                          .difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])] = numpy.array(
-                                              orispl_prices_filled[orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])]
-                                              .iloc[loop]) * multiplier # populate monthly fuel price columns of generator with 0 data with the first generator with actual non-zero and non-nan data
-                        #keep looping through the generators with eia923 price data until we have used all of their fuel price profiles, 
-                        #then start again from the beginning of the loop with the plant with the highest energy production
-                        if loop < loop_len:
-                            loop += 1
-                        else:
-                            loop = 0                
+                    if loop_len != -1: # stops prematurely if there are no filled prices of that specific contract type
+                        for o in orispl_prices_empty.orispl.unique(): # loop through ORISPL units with some EIA data but no prices
+                            orispl_prices.loc[(orispl_prices.orispl==o) 
+                                              & (orispl_prices.fuel==f), 
+                                              orispl_prices.columns
+                                              .difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])] = numpy.array(
+                                                  orispl_prices_filled[orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])]
+                                                  .iloc[loop]) * multiplier # populate monthly fuel price columns of generator with 0 data with the first generator with actual non-zero and non-nan data
+                            #keep looping through the generators with eia923 price data until we have used all of their fuel price profiles, 
+                            #then start again from the beginning of the loop with the plant with the highest energy production
+                            if loop < loop_len:
+                                loop += 1
+                            else:
+                                loop = 0                
                 #for nan prices (those without any EIA923 information) use Spot, Contract, and Tolling Prices (i.e. all of the non-nan prices) 
                 #update orispl_prices_filled to include the updated generators with previously 0 fuel price data
                 orispl_prices_filled_new = orispl_prices[(orispl_prices.fuel==f) & (orispl_prices[1] != 0.0)].dropna().drop_duplicates(subset='orispl', keep='first').sort_values('quantity', ascending=0)
@@ -171,11 +172,12 @@ for year in years:
                                       orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])] = numpy.array(
                                           orispl_prices_filled_new[orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])]
                                           .iloc[loop]) # populate monthly fuel price columns of generator with 0 data with the first generator with actual non-zero and non-nan data
-                    #keep looping through the generators with eia923 price data until we have used all of their fuel price profiles, then start again from the beginning of the loop with the plant with the highest energy production
+                    #keep looping through the generators with eia923 price data until we have used all of their fuel price profiles, 
+                    # then start again from the beginning of the loop with the plant with the highest energy production
                     if loop < loop_len:
                         loop += 1
                     else:
-                        loop = 0     
+                        loop = 0      
             #otherwise            
             else:
                 multiplier = 1.00
@@ -190,19 +192,20 @@ for year in years:
                 #we will use the plant with the highest energy production first, assigning its fuel price profile 
                 #to one of the generators that does not have EIA923 data. We will move on to plant with the next highest energy production
                 #and so on, uniformly distributing the available EIA923 fuel price profiles to generators without fuel price data
-                for o in numpy.concatenate((orispl_prices_empty.orispl.unique(),orispl_prices_nan.orispl.unique())):
-                    orispl_prices.loc[(orispl_prices.orispl==o) & (orispl_prices.fuel==f), 
-                                      orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])] = numpy.array(
-                                          orispl_prices_filled[orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])]
-                                          .iloc[loop]) * multiplier
-                    #keep looping through the generators with eia923 price data until we have used all of their fuel price profiles, 
-                    # then start again from the beginning of the loop with the plant with the highest energy production
-                    if loop < loop_len:
-                        loop += 1
-                    else:
-                        loop = 0
+                if loop_len != -1: # stops prematurely if there are no filled prices of that specific fuel type
+                    for o in numpy.concatenate((orispl_prices_empty.orispl.unique(),orispl_prices_nan.orispl.unique())):
+                        orispl_prices.loc[(orispl_prices.orispl==o) & (orispl_prices.fuel==f), 
+                                          orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])] = numpy.array(
+                                              orispl_prices_filled[orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])]
+                                              .iloc[loop]) * multiplier
+                        #keep looping through the generators with eia923 price data until we have used all of their fuel price profiles, 
+                        # then start again from the beginning of the loop with the plant with the highest energy production
+                        if loop < loop_len:
+                            loop += 1
+                        else:
+                            loop = 0
         
-        #and now we may have some nan values for fuel types that had no nerc_region eia923 data. We'll start with the national median for the EIA923 data.
+        #and now we may have some nan values for fuel types that had no region eia923 data. We'll start with the national median for the EIA923 data.
         f_array = numpy.intersect1d(orispl_prices[orispl_prices[1].isna()].fuel.unique(), df.fuel[~df.fuel.isna()].unique())
         for f in f_array: 
             temp = df[df.fuel==f][['month', 'quantity', 'fuel_price']]
@@ -295,4 +298,4 @@ for year in years:
         ## write fuel_price_metrics to file
         os.chdir(base_dname)  # change to code directory
         os.chdir(output_folder_rel_path)
-        fuel_price_metrics.to_csv('actual_fuel_price_metrics_'+nerc_region+'_'+str(year)+'.csv', index=False)
+        fuel_price_metrics.to_csv('actual_fuel_price_metrics_'+region+'_'+str(year)+'.csv', index=False)
