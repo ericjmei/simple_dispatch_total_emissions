@@ -61,9 +61,11 @@
 #   'ng' fuel missing price data is populated according to purchase type (contract, spot, or tolling) where tolling prices (which EIA923 has no information on) are calculated as contract prices. Any nan prices (plants in CEMS that aren't in EIA923) are populated with spot, contract, and tolling prices
 #   cleanGeneratorData now derates CHP plants according to their electricity : gross ratio
 # v28:
+# added a few more comments
 # added capability to subset total emissions from groups of states within the NERC regions simulated
 # added capability to create counterfactual generatorData object that is adjusted to specified average annual fuel price
 # model can now run balancing authority regions as well as NERC regions; model regions will need to be added (only has SOCO, PJM, NYIS, and ISNE currently)
+# fixued bug for hist_downtime = False where 'ffill' was populating in axis 0 instead of 1, which was giving units attributes (mw, heat_rate, etc.) from unrelated units
 
 
 
@@ -426,8 +428,11 @@ class generatorData(object):
             #So, for validation purposes, we probably want to have hist_downtime = True. 
             #For future scenario analysis, we probably want to have hist_downtime = False.
             if not self.hist_downtime:
-                temp_3 = temp_3.fillna(method='ffill')  
-                temp_3.iloc[0] = temp_3.iloc[0].fillna(method='ffill') #for some reason the first row was not doing fillna(ffill)
+                temp_3 = temp_3.fillna(method='ffill', axis=1)
+                # re-cast objects into floats so that later methods don't freak out
+                suffixes = [str(i) for i in range(1, 53)]
+                for col in [c + f"{suffix}" for suffix in suffixes]:
+                    temp_3[col] = pandas.to_numeric(temp_3[col])
             #merge temp_3 with df_orispl_unit. Now we have weekly heat rates, emissions rates, and capacities for each generator. 
             #These values depend on whether we are including hist_downtime
             df_orispl_unit = df_orispl_unit.merge(temp_3, on='orispl_unit', how='left')
@@ -1542,7 +1547,6 @@ class bidStack(object):
         if is_fuel_type == 'is_biomass':
             return self.f_totalConsBiomass(demand)
       
-    
     def calcFullMeritOrder(self):
         """ Calculates the base_ and marg_ co2, so2, nox, and coal_mix, where "base_" represents the online "base load" that does not 
         change with marginal changes in demand and "marg_" represents the marginal portion of the merit order that does change with marginal
