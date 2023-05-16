@@ -278,7 +278,7 @@ class generatorData(object):
         states = {'FRCC': ['fl'], 
                   'WECC': ['ca','or','wa', 'nv','mt','id','wy','ut','co','az','nm','tx'],
                   'SPP' : ['nm','ks','tx','ok','la','ar','mo'],
-                  'RFC' : ['mi','in','oh','wv','md','pa','nj', 'il', 'ky', 'wi', 'va'],
+                  'RFC' : ['mi','in','oh','wv','md','pa','nj', 'il', 'ky', 'wi', 'va', 'de'],
                   'NPCC' : ['ny','ct','de','ri','ma','vt','nh','me'],
                   'SERC' : ['mo','ar','la','ms','tn','ky','il','va','al','ga','sc','nc', 'tx', 'fl'],
                   'MRO': ['ia','il','mi','mn','mo','mt','nd','ne','sd','wi','wy'], 
@@ -1952,7 +1952,7 @@ class bidStack(object):
         return f
     
     
-    def plotBidStackMultiColor(self, df_column, plot_type, fig_dim = (4,4), production_cost_only=True, show_legend=True):
+    def plotBidStackMultiColor(self, df_column, plot_type, fig_dim = (4,4), production_cost_only=True, show_legend=True, coal_ng_only = False):
         """
         plots merit order and emission rates
 
@@ -1968,6 +1968,8 @@ class bidStack(object):
             DESCRIPTION. The default is True.
         show_legend : TYPE, optional
             DESCRIPTION. The default is True.
+        coal_ng_only : bool
+            returns tri-color plot with only coal, natural gas, and "other"
 
         Returns
         -------
@@ -1976,29 +1978,47 @@ class bidStack(object):
 
         """
         bs_df_fuel_color = self.df.copy()
-        # colors for all fuel and prime mover types
-        c = {'ng': {'cc': '#377eb8', 'ct': '#377eb8', 'gt': '#4daf4a', 'st': '#984ea3'}, 
-             'sub': {'st': '#e41a1c'}, 
-             'lig': {'st': '#ffff33'}, 
-             'bit': {'st': '#ff7f00'}, 
-             'rc': {'st': '#252525'}, # refined coal
-             'rfo': {'st': '#D0F43B'}, # residual oil
-             'dfo': {'st': '#47EDFA'}} # distillate oil # SC (syncoal) & og ("other" gas) still not represented
-        labels = {'sub_st': 'Subbituminous Coal',
-                  'bit_st': 'Bituminous Coal',
-                  'ng_ct': 'Natural Gas Combined Cycle',
-                  'ng_st': 'Natural Gas Steam Turbine',
-                  'ng_gt': 'Natural Gas Combustion Turbine'}
-                    
-        bs_df_fuel_color['fuel_color'] = '#bcbddc' # default color
-        for c_key in c.keys():
-            for p_key in c[c_key].keys():
-                bs_df_fuel_color.loc[(bs_df_fuel_color.fuel == c_key) & (bs_df_fuel_color.prime_mover == p_key), 'fuel_color'] = c[c_key][p_key]
         
-        #color for any generators without a fuel_color entry; NOTE: can probably remove?
-        empty_color = '#dd1c77'
-        color_2 = bs_df_fuel_color.fuel_color.replace('', empty_color)
-
+        if not coal_ng_only: # plot based on fuel type and prime mover
+            # colors for all fuel and prime mover types
+            c = {'ng': {'cc': '#377eb8', 'ct': '#377eb8', 'gt': '#4daf4a', 'st': '#984ea3'}, 
+                 'sub': {'st': '#e41a1c'}, 
+                 'lig': {'st': '#ffff33'}, 
+                 'bit': {'st': '#ff7f00'}, 
+                 'rc': {'st': '#252525'}, # refined coal
+                 'rfo': {'st': '#D0F43B'}, # residual oil
+                 'dfo': {'st': '#47EDFA'}} # distillate oil # SC (syncoal) & og ("other" gas) still not represented
+            labels = {'sub_st': 'Subbituminous Coal',
+                      'bit_st': 'Bituminous Coal',
+                      'ng_ct': 'Natural Gas Combined Cycle',
+                      'ng_st': 'Natural Gas Steam Turbine',
+                      'ng_gt': 'Natural Gas Combustion Turbine'}
+                        
+            bs_df_fuel_color['fuel_color'] = '#bcbddc' # default color
+            for c_key in c.keys():
+                for p_key in c[c_key].keys():
+                    bs_df_fuel_color.loc[(bs_df_fuel_color.fuel == c_key) & (bs_df_fuel_color.prime_mover == p_key), 'fuel_color'] = c[c_key][p_key]
+            
+            #color for any generators without a fuel_color entry; NOTE: can probably remove?
+            empty_color = '#dd1c77'
+            color_2 = bs_df_fuel_color.fuel_color.replace('', empty_color)
+        else:
+            # colors for all fuel and prime mover types
+            c = {'gas':'#377eb8',
+                 'coal':'#e41a1c',
+                 'oil':'#47EDFA'} # distillate oil # SC (syncoal) & og ("other" gas) still not represented
+            labels = {'gas': 'Natural Gas',
+                      'coal': 'Coal',
+                      'oil': 'Oil'}
+                        
+            bs_df_fuel_color['fuel_color'] = '#bcbddc' # default color
+            for c_key in c.keys():
+                bs_df_fuel_color.loc[(bs_df_fuel_color.fuel_type == c_key), 'fuel_color'] = c[c_key]
+            
+            #color for any generators without a fuel_color entry; NOTE: can probably remove?
+            empty_color = '#dd1c77'
+            color_2 = bs_df_fuel_color.fuel_color.replace('', empty_color)
+            
         #set up the y data
         y_data_e = self.df.gen_cost * 0 #emissions bar chart. Default is zero unless not production_cost_only
         if df_column == 'gen_cost':
@@ -2029,11 +2049,11 @@ class bidStack(object):
             if show_legend:
                 color_legend = []
                 for c in bs_df_fuel_color.fuel_color.unique():
-                    # color_legend.append(matplotlib.patches.Patch(color=c, 
-                    #                                              label=bs_df_fuel_color.fuel[bs_df_fuel_color.fuel_color==c].iloc[0] 
-                    #                                              + '_' + bs_df_fuel_color.prime_mover[bs_df_fuel_color.fuel_color==c].iloc[0]))
-                    orig_label = (bs_df_fuel_color.fuel[bs_df_fuel_color.fuel_color==c].iloc[0] 
-                                  + '_' + bs_df_fuel_color.prime_mover[bs_df_fuel_color.fuel_color==c].iloc[0])
+                    if not coal_ng_only:
+                        orig_label = (bs_df_fuel_color.fuel[bs_df_fuel_color.fuel_color==c].iloc[0] 
+                                      + '_' + bs_df_fuel_color.prime_mover[bs_df_fuel_color.fuel_color==c].iloc[0])
+                    else:
+                        orig_label = bs_df_fuel_color.fuel_type[bs_df_fuel_color.fuel_color==c].iloc[0] 
                     if orig_label in labels:
                         color_legend.append(matplotlib.patches.Patch(color=c, 
                                                                      label=labels[orig_label]))

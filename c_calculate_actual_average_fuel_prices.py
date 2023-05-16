@@ -13,6 +13,7 @@ import scipy.interpolate
 import numpy
 import os
 import pickle
+import warnings
 
 
 ##inputs
@@ -21,7 +22,7 @@ output_folder_actual_gd_rel_path = "../Data/Simple Dispatch Outputs/2023-04-18 a
 output_folder_rel_path = "../Data/Simple Dispatch Outputs/Fuel Price Metrics/6. ba regions"
 CPI_path = 'CPI-U_for_inflation.csv' # consumer price index data
 region_all = ['SOCO', 'ISNE', 'PJM', 'NYIS']
-years = range(2016, 2020)
+years = range(2006, 2020)
 
 ## import consumer price index
 # obtain code directory name for future folder changing
@@ -42,6 +43,60 @@ def adjust_to_2006_1_real_dollars(nominal_dollars, year, month):
     CPI_current = CPI.loc[((CPI['year'] == year) & (CPI['month'] == month)), 'CPIAUCSL'].values[0]
     real_dollars = nominal_dollars * CPI_current/CPI_2006
     return real_dollars
+
+def mask_outliers(data):
+    """
+    Returns a boolean mask indicating which elements of the input array
+    are outliers according to the modified Z-score method only applied to the upper bound.
+    Note: the minimum value for the upper threshold is 30 $/MWh
+    
+    Parameters
+    ----------
+    data : numpy.ndarray or pandas.Series
+        The input array of data to test for outliers.
+    threshold : float, optional
+        The number of scaled MADs above the median at which to define an
+        outlier. Default is 3.
+    
+    Returns
+    -------
+    mask : numpy.ndarray or pandas.Series
+        A boolean mask indicating which elements of the input array are
+        outliers.
+    upper_threshold : float
+        The upper threshold used to define outliers.
+    """
+    
+    # Calculate median and MAD
+    median = numpy.nanmedian(data)
+    mad = numpy.nanmedian(numpy.abs(data - median))
+
+    # Calculate the threshold for outliers (3 scaled MAD)
+    threshold = 3 * 1.4826 * mad
+
+    # Mask the non-outlier elements
+    # lower_threshold = median - threshold
+    upper_threshold = max(30, median + threshold)
+    mask = (data < 0) | (data > upper_threshold)
+
+    return mask
+
+def outlier_threshold(data):
+    """
+    Returns upper threshold for data
+    Note: the minimum value for the upper threshold is 10 $/MWh
+    """
+
+    # Calculate median and MAD
+    median = numpy.nanmedian(data)
+    mad = numpy.nanmedian(numpy.abs(data - median))
+
+    # Calculate the threshold for outliers (3 scaled MAD)
+    threshold = 3 * 1.4826 * mad
+    
+    # calculate the upper threshold
+    upper_threshold = max(30, median + threshold)
+    return upper_threshold
 
 # run for all years and NERC regions
 for year in years:
@@ -172,12 +227,11 @@ for year in years:
                                       orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])] = numpy.array(
                                           orispl_prices_filled_new[orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel', 'quantity', 'purchase_type'])]
                                           .iloc[loop]) # populate monthly fuel price columns of generator with 0 data with the first generator with actual non-zero and non-nan data
-                    #keep looping through the generators with eia923 price data until we have used all of their fuel price profiles, 
-                    # then start again from the beginning of the loop with the plant with the highest energy production
+                    #keep looping through the generators with eia923 price data until we have used all of their fuel price profiles, then start again from the beginning of the loop with the plant with the highest energy production
                     if loop < loop_len:
                         loop += 1
                     else:
-                        loop = 0      
+                        loop = 0     
             #otherwise            
             else:
                 multiplier = 1.00
@@ -230,9 +284,11 @@ for year in years:
         
         # Repeat the 'average', 'standard deviation', 'min', and 'max' columns with suffixes from 1 to 12
         suffixes = [str(i) for i in range(1, 13)]
-        cols_to_repeat = ['average', 'standard_deviation', 'min', 'max']
+        cols_to_repeat = ['average', 'standard_deviation', 'min', 'max', 'upper_threshold_outliers', 
+                          'excluded_units', 'excluded_units_fraction', 'average_no_outliers', 'standard_deviation_no_outliers']
         new_cols = [f"{col}{suffix}" for col in cols_to_repeat for suffix in suffixes]
-        new_cols = ['purchase_type', 'number_of_units', 'total_average', 'total_standard_deviation'] + new_cols # also append 'number of units' to the list
+        new_cols = ['purchase_type', 'number_of_units', 'total_average', 'total_standard_deviation', 
+                    'total_average_no_outliers', 'total_standard_deviation_no_outliers'] + new_cols # also append 'number of units' to the list
         fuel_price_metrics = pandas.concat([fuel_price_metrics, pandas.DataFrame(columns=new_cols)]) # append new empty columns
         
         # add purchase type to natural gas
@@ -258,10 +314,12 @@ for year in years:
                     # mask for fuel price metrics index
                     fuel_price_metrics_row = (fuel_price_metrics['fuel'] == fuel_type) & (fuel_price_metrics['purchase_type'] == purchase_type)
                     
-                    ## calculate metrics (number of units, average, min, max, standard deviation)
+                    ## calculate metrics (number of units, average, min, max, standard deviation) for all units
                     fuel_price_metrics.loc[fuel_price_metrics_row, 'number_of_units'] = mask.sum() # number of units
                     temp = temp_orispl_prices.loc[mask, range(1, 13)] # retrieve all price data to manipulate
-                    # average each week
+                    
+                    
+                    # average each month
                     fuel_price_metrics.loc[fuel_price_metrics_row, [f"average{suffix}" for suffix in suffixes]] = temp.mean(axis=0, skipna=True).values
                     # total average
                     fuel_price_metrics.loc[fuel_price_metrics_row, 'total_average'] = temp.stack().mean(axis=0, skipna=True)
@@ -273,6 +331,32 @@ for year in years:
                     fuel_price_metrics.loc[fuel_price_metrics_row, [f"standard_deviation{suffix}" for suffix in suffixes]] = temp.std(axis=0, skipna=True).values 
                     # total standard devation
                     fuel_price_metrics.loc[fuel_price_metrics_row, 'total_standard_deviation'] = temp.stack().std(axis=0, skipna=True)
+                    
+                    ## calculate metrics while removing outliers   
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings(action='ignore', category=RuntimeWarning)
+                        # calculate upper threshold for outliers
+                        fuel_price_metrics.loc[fuel_price_metrics_row, [f"upper_threshold_outliers{suffix}" for suffix in suffixes]] = temp.apply(outlier_threshold,
+                                                                                                                                                  axis=0).values
+                        # mask for outliers
+                        mask = temp.apply(mask_outliers)
+                        temp = temp.where(~mask, numpy.nan) # change outlier values to nan
+                        # calculate number of units excluded from average
+                        fuel_price_metrics.loc[fuel_price_metrics_row, [f"excluded_units{suffix}" for suffix in suffixes]] = mask.sum().values
+                        # calculate fraction of units excluded from average
+                        fuel_price_metrics.loc[fuel_price_metrics_row, [f"excluded_units_fraction{suffix}" 
+                                                                        for suffix in suffixes]] = mask.sum().values/temp.shape[0] if temp.shape[0] else numpy.nan
+                        # average each month
+                        fuel_price_metrics.loc[fuel_price_metrics_row, [f"average_no_outliers{suffix}" for suffix in suffixes]] = temp.mean(
+                            axis=0, skipna=True).values
+                        # total average
+                        fuel_price_metrics.loc[fuel_price_metrics_row, 'total_average_no_outliers'] = temp.stack().mean(axis=0, skipna=True)
+                        # standard deviation 
+                        fuel_price_metrics.loc[fuel_price_metrics_row, [f"standard_deviation_no_outliers{suffix}" for suffix in suffixes]] = temp.std(
+                            axis=0, skipna=True).values
+                        # total standard devation
+                        fuel_price_metrics.loc[fuel_price_metrics_row, 'total_standard_deviation_no_outliers'] = temp.stack().std(axis=0, skipna=True)
+                    
             else:
                 # mask for units that have matching fuel type
                 mask = temp_orispl_prices["fuel"] == fuel_type
@@ -282,7 +366,7 @@ for year in years:
                 ## calculate metrics (number of units, average, min, max, standard deviation)
                 fuel_price_metrics.loc[fuel_price_metrics_row, 'number_of_units'] = mask.sum() # number of units
                 temp = temp_orispl_prices.loc[mask, range(1, 13)] # retrieve all price data to manipulate
-                # average each week
+                # average each month
                 fuel_price_metrics.loc[fuel_price_metrics_row, [f"average{suffix}" for suffix in suffixes]] = temp.mean(axis=0, skipna=True).values
                 # total average
                 fuel_price_metrics.loc[fuel_price_metrics_row, 'total_average'] = temp.stack().mean(axis=0, skipna=True)
@@ -294,6 +378,31 @@ for year in years:
                 fuel_price_metrics.loc[fuel_price_metrics_row, [f"standard_deviation{suffix}" for suffix in suffixes]] = temp.std(axis=0, skipna=True).values 
                 # total standard devation
                 fuel_price_metrics.loc[fuel_price_metrics_row, 'total_standard_deviation'] = temp.stack().std(axis=0, skipna=True)
+                
+                ## calculate metrics while removing outliers
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(action='ignore', category=RuntimeWarning)
+                    # calculate upper threshold for outliers
+                    fuel_price_metrics.loc[fuel_price_metrics_row, [f"upper_threshold_outliers{suffix}" for suffix in suffixes]] = temp.apply(outlier_threshold,
+                                                                                                                                              axis=0).values
+                    # mask for outliers
+                    mask = temp.apply(mask_outliers)
+                    temp = temp.where(~mask, numpy.nan) # change outlier values to nan
+                    # calculate number of units excluded from average
+                    fuel_price_metrics.loc[fuel_price_metrics_row, [f"excluded_units{suffix}" for suffix in suffixes]] = mask.sum().values
+                    # calculate fraction of units excluded from average
+                    fuel_price_metrics.loc[fuel_price_metrics_row, [f"excluded_units_fraction{suffix}" 
+                                                                    for suffix in suffixes]] = mask.sum().values/temp.shape[0] if temp.shape[0] else numpy.nan
+                    # average each month
+                    fuel_price_metrics.loc[fuel_price_metrics_row, [f"average_no_outliers{suffix}" for suffix in suffixes]] = temp.mean(
+                        axis=0, skipna=True).values
+                    # total average
+                    fuel_price_metrics.loc[fuel_price_metrics_row, 'total_average_no_outliers'] = temp.stack().mean(axis=0, skipna=True)
+                    # standard deviation 
+                    fuel_price_metrics.loc[fuel_price_metrics_row, [f"standard_deviation_no_outliers{suffix}" for suffix in suffixes]] = temp.std(
+                        axis=0, skipna=True).values
+                    # total standard devation
+                    fuel_price_metrics.loc[fuel_price_metrics_row, 'total_standard_deviation_no_outliers'] = temp.stack().std(axis=0, skipna=True)
                 
         ## write fuel_price_metrics to file
         os.chdir(base_dname)  # change to code directory
