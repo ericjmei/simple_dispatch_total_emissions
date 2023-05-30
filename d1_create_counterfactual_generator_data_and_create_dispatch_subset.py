@@ -35,6 +35,7 @@ if __name__ == '__main__':
     # easiur data from here: https://barney.ce.cmu.edu/~jinhyok/easiur/online/
     # fuel_default_prices.xlsx compiled from data from https://www.eia.gov/
     input_folder_rel_path = "../Data/Simple Dispatch Inputs" # where to access input data relative to code folder
+    output_rel_path = "../Data/Simple Dispatch Outputs/2023-04-05 CF no outliers/" # where to save output data
     ferc714_part2_schedule6_csv = 'Part 2 Schedule 6 - Balancing Authority Hourly System Lambda.csv'
     ferc714IDs_csv= 'Respondent IDs.csv'
     cems_folder_path ='../Data/CAMD/PUDL retrieved hourly' # relative path for all CEMS outputs
@@ -43,15 +44,19 @@ if __name__ == '__main__':
     CPI_path = 'CPI-U_for_inflation.csv'
     
     ## specify run year
-    run_year = 2006
+    run_year = 2018
     ## define states to subset
-    states_to_subset_all = [['GA'], # SERC
-                            ['GA', 'AL', 'TN'], # SERC
-                            ['IL', 'IN'], # SERC
-                            ['OH', 'PA', 'WV', 'IN', 'MI', 'NJ'], # RFC
-                            ['NY', 'CT']] # NPCC
+    # states_to_subset_all = [['GA'], # SERC
+    #                         ['GA', 'AL', 'TN'], # SERC
+    #                         [], # RFC
+    #                         ['NY', 'CT']] # NPCC
+    states_to_subset_all = [['NY', 'CT']]
     ## define NERC regions to run
-    nerc_region_all = ['SERC', 'SERC', 'SERC', 'RFC', 'NPCC']
+    # nerc_region_all = ['SERC', 'SERC', 'RFC', 'NPCC']
+    nerc_region_all = ['NPCC']
+    nerc_to_state_names = [['MO','AR','LA','MS','TN','KY','IL','VA','AL','GA','SC','NC'],
+                           ['MI','IN','OH','WV','MD','PA','NJ'],
+                           ['NY','CT','DE','RI','MA','VT','NH','ME']]
     ## input dictionary with fuel prices to adjust to (all from c_calculate_actual_average_fuel_prices)
     # these are all from 2006
     avg_price_fuel_type = {'SERC': {'ng': {'all': 8.0479441},
@@ -98,7 +103,7 @@ if __name__ == '__main__':
         try: # get shortened pickeled dictionary if generatorData has already been run for the particular year and region
             # change path to simple dispatch output data folder
             os.chdir(base_dname) 
-            os.chdir("../Data/Simple Dispatch Outputs/Counterfactual Scenario") # where to access output data relative to code folder
+            os.chdir(output_rel_path) # where to access output data relative to code folder
             gd_short = pickle.load(open('counterfactual_generator_data_short_%s_%s.obj'%(nerc_region, str(run_year)), 'rb')) # load generatordata object
         except:
             # run the generator data object
@@ -124,12 +129,14 @@ if __name__ == '__main__':
                         'mdt_coal_events': gd.mdt_coal_events, 'df': gd.df, 'fuel_price_metrics': gd.fuel_price_metrics}
             # change path to simple dispatch output data folder
             os.chdir(base_dname)
-            os.chdir("../Data/Simple Dispatch Outputs/Counterfactual Scenario") # where to access output data relative to code folder
+            os.chdir(output_rel_path) # where to access output data relative to code folder
+            os.chdir('./Generator Data')
             pickle.dump(gd_short, open('counterfactual_generator_data_short_%s_%s.obj'%(nerc_region, str(run_year)), 'wb'))
         
         # save fuel price metrics
         os.chdir(base_dname)
-        os.chdir('../Data/Simple Dispatch Outputs/Counterfactual Scenario/Fuel Price Metrics')
+        os.chdir(output_rel_path)
+        os.chdir('./Fuel Price Metrics')
         gd_short['fuel_price_metrics'].to_csv('counterfactual_fuel_price_metrics_'+nerc_region+'_'+str(run_year)+'.csv', index=False)
         
         states_to_subset = states_to_subset_all[i]
@@ -148,8 +155,9 @@ if __name__ == '__main__':
         #save dispatch results 
         # change path to simple dispatch output data folder
         os.chdir(base_dname)
-        os.chdir("../Data/Simple Dispatch Outputs/Counterfactual Scenario")
-        dp.df.to_csv('simple_dispatch_'+nerc_region+'_'+str(run_year)+'.csv', index=False) # save larger dispatch results
+        os.chdir(output_rel_path)
+        fn = 'simple_dispatch_'+nerc_region+'_'+'_'.join(nerc_to_state_names[i])+'_'+str(run_year)+'.csv' # unique file name for particular NERC region
+        dp.df.to_csv(fn, index=False) # save larger dispatch results
         # save subset results
-        os.chdir("./Dispatch Subset/Raw") 
-        dp.df_subset.to_parquet('simple_dispatch_'+nerc_region+'_'+str(run_year)+'_' + '_'.join(states_to_subset)+'.parquet', index=False)
+        if states_to_subset != []:
+            dp.df_subset.to_parquet('simple_dispatch_'+nerc_region+'_' + '_'.join(states_to_subset)+'_'+str(run_year)+'.parquet', index=False)
