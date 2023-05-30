@@ -34,7 +34,7 @@ if __name__ == '__main__':
     # easiur data from here: https://barney.ce.cmu.edu/~jinhyok/easiur/online/
     # fuel_default_prices.xlsx compiled from data from https://www.eia.gov/
     input_folder_rel_path = "../Data/Simple Dispatch Inputs" # where to access input data relative to code folder
-    output_rel_path = "../Data/Simple Dispatch Outputs/2023-04-18 act ba regions/" # where to save output data
+    output_rel_path = "../Data/Simple Dispatch Outputs/2023-05-10 act ba coal propagated/" # where to save output data
     ferc714_part2_schedule6_csv = 'Part 2 Schedule 6 - Balancing Authority Hourly System Lambda.csv'
     ferc714IDs_csv= 'Respondent IDs.csv'
     cems_folder_path ='../Data/CAMD/PUDL retrieved hourly' # relative path for all CEMS outputs
@@ -42,21 +42,25 @@ if __name__ == '__main__':
     fuel_commodity_prices_xlsx = 'fuel_default_prices.xlsx'
     
     ## specify run year
-    run_year = 2018 
-    ## define states to subset
-    states_to_subset_all = [['GA', 'AL'], # SOCO
-                            ['PA', 'NJ', 'DE', 'WV', 'OH', 'IL', 'NC', 'IN'], # PJM
-                            ['CT'], # ISNE
-                            ['NY']] # NYIS
-    ## define balancing authority regions to be run
-    ba_region_all = ['SOCO', 'PJM', 'ISNE', 'NYIS']
-    # define NERC regions that are parallel to balancing authority regions to be run
-    nerc_region_all = ['SERC', 'RFC', 'NPCC', 'NPCC']
-    # define NERC states for rename convention
-    ba_to_state_names = [['GA','AL','FL','MS'],
-                          ['PA', 'NJ', 'DE', 'MD', 'VA', 'WV', 'OH', 'KY', 'MI', 'IL', 'NC', 'IN'],
-                          ['ME', 'NH', 'VT', 'MA', 'CT', 'RI'],
-                          ['NY']] 
+    run_year = 2015
+    # ## define states to subset
+    # states_to_subset_all = [['GA', 'AL'], # SOCO
+    #                         ['PA', 'NJ', 'DE', 'WV', 'OH', 'IL', 'NC', 'IN'], # PJM
+    #                         ['CT'], # ISNE
+    #                         ['NY']] # NYIS
+    # ## define balancing authority regions to be run
+    # ba_region_all = ['SOCO', 'PJM', 'ISNE', 'NYIS']
+    # # define NERC regions that are parallel to balancing authority regions to be run
+    # nerc_region_all = ['SERC', 'RFC', 'NPCC', 'NPCC']
+    # # define NERC states for rename convention
+    # ba_to_state_names = [['GA','AL','FL','MS'],
+    #                       ['PA', 'NJ', 'DE', 'MD', 'VA', 'WV', 'OH', 'KY', 'MI', 'IL', 'NC', 'IN'],
+    #                       ['ME', 'NH', 'VT', 'MA', 'CT', 'RI'],
+    #                       ['NY']] 
+    states_to_subset_all = [[]]
+    ba_region_all = ['PJM']
+    nerc_region_all = ['RFC']
+    ba_to_state_names=[['PA', 'NJ', 'DE', 'MD', 'VA', 'WV', 'OH', 'KY', 'MI', 'IL', 'NC', 'IN']]
     
     ## these file paths will change with every year (automatically when run_year is set)
     eia923_schedule5_xlsx = 'EIA923_Schedules_2_3_4_5_M_12_'+str(run_year)+'_Final_Revision.xlsx' # EIA 923
@@ -117,12 +121,12 @@ if __name__ == '__main__':
             os.chdir('./Generator Data')
             pickle.dump(gd_short, open('generator_data_short_%s_%s.obj'%(ba_region, str(run_year)), 'wb'))
         
-        # save historical actual dispatch
-        os.chdir(base_dname) 
-        os.chdir(output_rel_path)
-        os.chdir("./Actual CEMS")
-        fn = 'actual_CEMS_'+ba_region+'_'+'_'.join(ba_to_state_names[i])+'_'+str(run_year)+'.csv' # unique file name for particular NERC region
-        gd_short["hist_dispatch"].to_csv(fn, index=False)
+            # save historical actual dispatch
+            os.chdir(base_dname) 
+            os.chdir(output_rel_path)
+            os.chdir("./Actual CEMS")
+            fn = 'actual_CEMS_'+ba_region+'_'+'_'.join(ba_to_state_names[i])+'_'+str(run_year)+'.csv' # unique file name for particular NERC region
+            gd_short["hist_dispatch"].to_csv(fn, index=False)
         
         states_to_subset = states_to_subset_all[i]
         ## create bidStack object and save merit order figures

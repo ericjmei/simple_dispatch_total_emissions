@@ -65,8 +65,9 @@
 # added capability to subset total emissions from groups of states within the NERC regions simulated
 # added capability to create counterfactual generatorData object that is adjusted to specified average annual fuel price
 # model can now run balancing authority regions as well as NERC regions; model regions will need to be added (only has SOCO, PJM, NYIS, and ISNE currently)
-# fixued bug for hist_downtime = False where 'ffill' was populating in axis 0 instead of 1, which was giving units attributes (mw, heat_rate, etc.) from unrelated units
-
+# fixed bug for hist_downtime = False where 'ffill' was populating in axis 0 instead of 1, which was giving units attributes (mw, heat_rate, etc.) from unrelated units
+# fixed bug for calculating fuel prices where negative values were not being filtered
+# fixed bug for calculating fuel prices where "0"s were being populated due to some generators having nan fuel prices in EIA 923
 
 
 import pandas
@@ -547,9 +548,22 @@ class generatorData(object):
         df = df[['YEAR','MONTH','orispl','ENERGY_SOURCE','FUEL_GROUP','QUANTITY','FUEL_COST', 'Purchase Type']]
         df.columns = ['year', 'month', 'orispl' , 'fuel', 'fuel_type', 'quantity', 'fuel_price', 'purchase_type'] # rename columns
         df.fuel = df.fuel.str.lower()       
-        # clean up prices
-        df.loc[df.fuel_price=='.', 'fuel_price'] = scipy.nan # nan fuel price gets actual nan
+        ## clean up prices
+        df = df.drop(df.loc[df.fuel_price=='.'].index, axis=0).copy() # remove nan fuel prices
         df.fuel_price = df.fuel_price.astype('float')/100.
+        df = df.drop(df.loc[df.fuel_price <= 0].index, axis=0).copy() # remove fuel prices that are erroneously low
+        # # remove prices that are too high, defined by threshold of 3 scaled median absolute deviation or 20,000, whichever is higher
+        # # minimum upper bound of 20,000 was arbitrarily determined
+        # # Calculate median and MAD
+        # median = numpy.nanmedian(df.fuel_price)
+        # mad = numpy.nanmedian(numpy.abs(df.fuel_price - median))
+        # # Calculate the threshold for outliers (3 scaled MAD)
+        # threshold = 3 * 1.4826 * mad
+        # # Mask the non-outlier elements
+        # upper_threshold = max(30, median + threshold)
+        # mask = df.fuel_price > upper_threshold
+        # df.loc[mask, 'fuel_price'] = numpy.nan
+        
         df = df.reset_index() # adds index as column    
         ## find unique monthly prices per orispl and fuel type
         #create empty dataframe to hold the results
@@ -570,6 +584,7 @@ class generatorData(object):
                 temp_prices = pandas.DataFrame({'month': numpy.arange(12)+1})
                 temp_prices = temp_prices.merge(temp[['month', 'fuel_price']], on='month', how='left') # add fuel prices to dataframe
                 temp_prices.loc[temp_prices.fuel_price.isna(), 'fuel_price'] = temp_prices.fuel_price.median() # populates nan months by median fuel price
+                temp_prices.loc[temp_prices.fuel_price == 0, 'fuel_price'] = temp_prices.fuel_price.median() # populates nan months by median fuel price
                 #add the monthly fuel prices into orispl_prices
                 orispl_prices.loc[orispl_prices.orispl_unit==o_u, orispl_prices.columns.difference(['orispl_unit', 'orispl', 'fuel'])] = numpy.append(numpy.array(temp_prices.fuel_price),temp.quantity.sum())
         
@@ -717,8 +732,9 @@ class generatorData(object):
             ## functions to filter data
             def mask_outliers(data):
                 """
-                Returns a boolean mask indicating which elements of the input array
+                Returns a boolean mask indicating which elements of the input array 
                 are outliers according to the modified Z-score method only applied to the upper bound.
+                Also removes outliers that are negative or 0
                 Note: the minimum value for the upper threshold is 30 $/MWh
                 
                 Parameters
@@ -746,9 +762,8 @@ class generatorData(object):
                 threshold = 3 * 1.4826 * mad
 
                 # Mask the non-outlier elements
-                # lower_threshold = median - threshold
                 upper_threshold = max(30, median + threshold)
-                mask = (data < 0) | (data > upper_threshold)
+                mask = (data <= 0) | (data > upper_threshold)
 
                 return mask
 
@@ -2064,7 +2079,7 @@ class bidStack(object):
             pass
         matplotlib.pylab.ylim(ymax=y_data.quantile(0.975)) #take the 97.5th percentile for the y limits.
         #ax.set_xlim(bs.hist_dispatch.demand.quantile(0.025)*0.001, bs.hist_dispatch.demand.quantile(0.975)*0.001) #take the 2.5th and 97.5th percentiles for the x limits
-        ax.set_xlim(0, self.hist_dispatch.demand.quantile(0.975)*0.001) #take 0 and the 97.5th percentiles for the x limits
+        ax.set_xlim(0, self.hist_dispatch.demand.quantile(0.995)*0.001) #take 0 and the 97.5th percentiles for the x limits
         if df_column == 'gen_cost':
             if production_cost_only:
                 ax.set_ylim(0, 90)

@@ -2,9 +2,9 @@
 """
 Created on Wed May  3 14:48:58 2023
 
-temporary way to edit all generator data objects such that they use maximum capacity over multiple years in a year
-instead of observed capacity
-edited to make sure coal plants carry over unless they are retired
+script does 2 things:
+1. edit all generator data objects such that they use maximum capacity over multiple years in a year instead of observed capacity in a given week
+2. makes sure coal plants carry over to each year unless they are retired to capture plants that are off because of fuel prices
 
 @author: emei3
 """
@@ -27,20 +27,20 @@ if __name__ == '__main__':
     ### inputs
     run_years = range(2006, 2020) # specify run years
     
-    region = 'PJM'
+    region = 'NYIS'
     states_to_subset = []
     # input and output folders
-    is_counterfactual = False
-    rel_path_input_generators = "../../Data/Simple Dispatch Outputs/2023-05-10 cf ba coal propagated only ng/Generator Data Old"
-    rel_path_fuel_prices = "../../Data/Simple Dispatch Outputs/Fuel Price Metrics/6. ba regions"
+    is_counterfactual = False # NOTE: if only doing natural gas counterfactual, this needs to be set to false and fn_beginning_gd_short = 'counterfactual_'
+    rel_path_input_generators = "../Data/Simple Dispatch Outputs/2023-05-10 cf ba coal propagated only ng/Generator Data Old"
+    rel_path_fuel_prices = "../Data/Simple Dispatch Outputs/Fuel Price Metrics/6. ba regions"
     fn_beginning_fuel_prices = "actual_fuel_price_metrics_"
-    rel_path_retirements = "../../Data/Simple Dispatch Inputs"
-    rel_path_output = "../../Data/Simple Dispatch Outputs/2023-05-10 cf ba coal propagated only ng/Generator Data"
+    rel_path_retirements = "../Data/Simple Dispatch Inputs"
+    rel_path_output = "../Data/Simple Dispatch Outputs/2023-05-10 cf ba coal propagated only ng/Generator Data"
     
     if is_counterfactual:
         fn_beginning_gd_short = 'counterfactual_'
     else:
-        fn_beginning_gd_short = ''
+        fn_beginning_gd_short = '' # 'counterfactual_'
     
     ## outputs to store all values
     inserted_units = dict() # for plants from prior years inserted into current year dataframe
@@ -297,48 +297,3 @@ if __name__ == '__main__':
     for year in retired_units.keys():
         retired_units[year].to_excel(writer, sheet_name='retired '+str(year))
     writer.close()
-    
-    #%% debug unit finder
-    ## for each row in retirements data, loop through and try to find unit
-    generators_to_retire = pd.DataFrame() # to store processed dataframes
-    for index, row in units_not_found.iterrows():
-        # find units in plant with same fuel type and prime mover
-        mask = ((generators_year_new['orispl'] == generators_retired_current.loc[index, 'Plant ID']) & # match ORISPL
-                (generators_year_new['fuel'] == generators_retired_current.loc[index, 'Energy Source Code'].lower()) & # match fuel type
-                (generators_year_new['prime_mover'] == generators_retired_current.loc[index, 'Prime Mover Code'].lower()))
-        generators_to_search = generators_year_new.loc[mask, :]
-        
-        # if only one unit left, retire unit
-        if generators_to_search.shape[0] == 1:
-            print('unit found with exact match: '+ generators_to_search['orispl_unit'].values[0])
-            generators_to_retire = pd.concat([generators_to_retire, 
-                                              retire_unit(generators_to_search,  generators_retired_current.loc[index, 'Retirement Month'])],
-                                             axis=0)
-        else: # otherwise, look for unit name
-            # retrieve generator numbers
-            units_to_find = [generator.split('_')[1] for generator in generators_to_search['orispl_unit'].values.flatten()]
-            
-            # unit ID is not always an exact match, so also look for numeric subsets within retired (as a last resort)
-            unitID_to_int = int(re.sub('\D', '', generators_retired_current.loc[index, 'Generator ID']))
-            units_to_find_to_int = [int(re.sub('\D', '', unit_to_find)) for unit_to_find in units_to_find]
-            
-            # if unit ID is exact match, remove it from the generators to insert
-            if any([unit == generators_retired_current.loc[index, 'Generator ID'] for unit in units_to_find]):
-                mask = [unit != generators_retired_current.loc[index, 'Generator ID'] for unit in units_to_find]
-                generators_to_search = generators_to_search.drop(generators_to_search[mask].index).copy() # remove units that don't match
-                print('unit found with exact match: '+ generators_to_search['orispl_unit'].values[0])
-                generators_to_retire = pd.concat([generators_to_retire, 
-                                                  retire_unit(generators_to_search,  generators_retired_current.loc[index, 'Retirement Month'])],
-                                                 axis=0)
-            elif any([unit == unitID_to_int for unit in units_to_find_to_int]): # look for non-exact matches through numeric part of the generator
-                # NOTE THAT THIS WON'T WORK PERFECTLY EVERY TIME
-                mask = [unit != unitID_to_int for unit in units_to_find_to_int]
-                generators_to_search = generators_to_search.drop(generators_to_search[mask].index).copy() # remove units that don't match
-                print('unit found with non-exact match: '+ generators_to_search['orispl_unit'].values[0])
-                generators_to_retire = pd.concat([generators_to_retire, 
-                                                  retire_unit(generators_to_search,  generators_retired_current.loc[index, 'Retirement Month'])],
-                                                 axis=0)
-            else:
-                print('nothing has been found for generator '+str(generators_retired_current.loc[index, 'Plant ID']) + ' unit ' + 
-                      generators_retired_current.loc[index, 'Generator ID'])
-                units_not_found = pd.concat([units_not_found, generators_retired_current.loc[index].to_frame().T])
