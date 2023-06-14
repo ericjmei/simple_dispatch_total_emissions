@@ -1967,7 +1967,8 @@ class bidStack(object):
         return f
     
     
-    def plotBidStackMultiColor(self, df_column, plot_type, fig_dim = (4,4), production_cost_only=True, show_legend=True, coal_ng_only = False):
+    def plotBidStackMultiColor(self, df_column, plot_type, fig_dim = (4,4), production_cost_only=True, show_legend=True, coal_ng_only = False,
+                               plot_label = True, font_size=10):
         """
         plots merit order and emission rates
 
@@ -2080,8 +2081,10 @@ class bidStack(object):
         matplotlib.pylab.ylim(ymax=y_data.quantile(0.975)) #take the 97.5th percentile for the y limits.
         #ax.set_xlim(bs.hist_dispatch.demand.quantile(0.025)*0.001, bs.hist_dispatch.demand.quantile(0.975)*0.001) #take the 2.5th and 97.5th percentiles for the x limits
         ax.set_xlim(0, self.hist_dispatch.demand.quantile(0.995)*0.001) #take 0 and the 97.5th percentiles for the x limits
+        matplotlib.rcParams.update({'font.size': font_size})
         if df_column == 'gen_cost':
             if production_cost_only:
+                matplotlib.rcParams.update({'font.size': font_size})
                 ax.set_ylim(0, 90)
                 ax.set_yticks((0, 15, 30, 45, 60, 75, 90))
             if not production_cost_only:
@@ -2091,10 +2094,14 @@ class bidStack(object):
             ax.set_ylim(0, 1300)
             ax.set_yticks((250, 500, 750, 1000, 1250))
         if df_column == 'so2':
-            ax.set_ylim(0, 15)
-            ax.set_yticks((0, 3, 6, 9, 12, 15))
-        matplotlib.pylab.xlabel('Generation [GW]')
-        matplotlib.pylab.ylabel(y_lab)
+            ax.set_ylim(0, 20)
+            ax.set_yticks((0, 5, 10, 15, 20))
+        if df_column == 'nox':
+            ax.set_ylim(0, 6)
+            ax.set_yticks((0, 3, 6))
+        if plot_label:
+            matplotlib.pylab.xlabel('Generation [GW]')
+            matplotlib.pylab.ylabel(y_lab)
         matplotlib.pylab.tight_layout()
         matplotlib.pylab.show()
         return f
