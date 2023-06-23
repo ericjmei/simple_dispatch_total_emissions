@@ -17,7 +17,7 @@ import pandas as pd
 import os
 import numpy as np
 
-#%% helper functions 
+## helper functions 
 
 def matchPrimeMover(df_unt, df_gen):
     ## match prime movers to generating units (boilers)
@@ -77,13 +77,24 @@ def matchPrimeMover(df_unt, df_gen):
     return temp_df_unt
 
 ## fill column with a dictionary value
-def fill_column(row):
-    PCAID_to_BACODE = {18195:"SOCO",
-                       13434:"ISNE",
+def fill_column(PCAID, state):
+    PCAID_to_BACODE = {13434:"ISNE",
+                       ## SE balancing authorities
+                       18195:"SOCO", # southern company
+                       18642: "TVA", # tennessee valley authority
+                       189: "AEC", # powersouth energy cooperative
+                       ## PJM balancing authorities
                        14725:"PJM",
+                       32208:"ATSI", # american transmission systems inc/firstenergy corp
+                       3542:"DEOK", # duke energy ohio kentucky; NEEDS TO BE FILTERED FOR OH and KY
+                       5580:"EKPC", # east kentucky power cooperative
+                       14015: "OVEC", # ohio valley electric corporation
                        13501:"NYIS"}
-    if row in PCAID_to_BACODE:
-        return PCAID_to_BACODE[row]
+    if PCAID in PCAID_to_BACODE:
+        # return none if DEOK and not in OH or KY
+        if (PCAID == 3542) & (state not in ['OH', 'KY']):
+            return None
+        return PCAID_to_BACODE[PCAID]
     else:
         return None
 
@@ -123,7 +134,7 @@ egrid_plnt = pd.read_excel(egrid_fname, 'PLNT'+egrid_year_str, skiprows=4)
 # deviations from 2016: no BACODE (balancing authority code), so add it with PCAID
 df_plnt = egrid_plnt[['ORISPL', 'PSTATABB', 'NERC', 'SUBRGN', 'PLPRMFL', 'PLFUELCT', 'PCAID']]
 # fill column for balancing authority
-df_plnt['BACODE'] = egrid_plnt['PCAID'].apply(lambda x: fill_column(x))
+df_plnt['BACODE'] = egrid_plnt[['PCAID', 'PSTATABB']].apply(lambda x: fill_column(x['PCAID'], x['PSTATABB']), axis=1)
 
 
 ## add in a PRMVR column to unit data using generator data
@@ -172,7 +183,7 @@ egrid_plnt = pd.read_excel(egrid_fname, 'PLNT'+egrid_year_str, skiprows=4)
 # deviations from 2016: no BACODE (balancing authority code)
 df_plnt = egrid_plnt[['ORISPL', 'PSTATABB', 'NERC', 'SUBRGN', 'PLPRMFL', 'PLFUELCT', 'PCAID']]
 # fill column for balancing authority
-df_plnt['BACODE'] = egrid_plnt['PCAID'].apply(lambda x: fill_column(x))
+df_plnt['BACODE'] = egrid_plnt[['PCAID', 'PSTATABB']].apply(lambda x: fill_column(x['PCAID'], x['PSTATABB']), axis=1)
 
 ## add in a PRMVR column to unit data using generator data
 df_unt = matchPrimeMover(df_unt, df_gen)
@@ -222,7 +233,7 @@ egrid_plnt = pd.read_excel(egrid_fname, 'PLNT'+egrid_year_str, skiprows=4)
 # deviations from 2016: no BACODE (balancing authority code)
 df_plnt = egrid_plnt[['ORISPL', 'PSTATABB', 'NERC', 'SUBRGN', 'PLPRMFL', 'PLFUELCT', 'PCAID']]
 # fill column for balancing authority
-df_plnt['BACODE'] = egrid_plnt['PCAID'].apply(lambda x: fill_column(x))
+df_plnt['BACODE'] = egrid_plnt[['PCAID', 'PSTATABB']].apply(lambda x: fill_column(x['PCAID'], x['PSTATABB']), axis=1)
 
 ## add in a PRMVR column to unit data using generator data
 df_unt = matchPrimeMover(df_unt, df_gen)
@@ -272,7 +283,7 @@ egrid_plnt = pd.read_excel(egrid_fname, 'PLNT'+egrid_year_str, skiprows=4)
 # deviations from 2016: no BACODE (balancing authority code)
 df_plnt = egrid_plnt[['ORISPL', 'PSTATABB', 'NERC', 'SUBRGN', 'PLPRMFL', 'PLFUELCT', 'PCAID']]
 # fill column for balancing authority
-df_plnt['BACODE'] = egrid_plnt['PCAID'].apply(lambda x: fill_column(x))
+df_plnt['BACODE'] = egrid_plnt[['PCAID', 'PSTATABB']].apply(lambda x: fill_column(x['PCAID'], x['PSTATABB']), axis=1)
 
 ## add in a PRMVR column to unit data using generator data
 df_unt = matchPrimeMover(df_unt, df_gen)
@@ -322,7 +333,7 @@ egrid_plnt = pd.read_excel(egrid_fname, 'PLNT'+egrid_year_str, skiprows=4)
 # deviations from 2016: no BACODE (balancing authority code)
 df_plnt = egrid_plnt[['ORISPL', 'PSTATABB', 'NERC', 'SUBRGN', 'PLPRMFL', 'PLFUELCT', 'PCAID']]
 # fill column for balancing authority
-df_plnt['BACODE'] = egrid_plnt['PCAID'].apply(lambda x: fill_column(x))
+df_plnt['BACODE'] = egrid_plnt[['PCAID', 'PSTATABB']].apply(lambda x: fill_column(x['PCAID'], x['PSTATABB']), axis=1)
 
 ## add in a PRMVR column to unit data using generator data
 df_unt = matchPrimeMover(df_unt, df_gen)
