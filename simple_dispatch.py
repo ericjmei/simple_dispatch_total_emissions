@@ -68,6 +68,8 @@
 # fixed bug for hist_downtime = False where 'ffill' was populating in axis 0 instead of 1, which was giving units attributes (mw, heat_rate, etc.) from unrelated units
 # fixed bug for calculating fuel prices where negative values were not being filtered
 # fixed bug for calculating fuel prices where "0"s were being populated due to some generators having nan fuel prices in EIA 923
+# v29:
+# added more balancing authority areas
 
 
 import pandas
@@ -286,7 +288,12 @@ class generatorData(object):
                   'TRE': ['ok','tx'],
                   # balancing authorities
                   'SOCO': ['GA','AL','FL','MS'],
+                  'AEC': ['AL', 'FL'],
+                  'TVA': ['TN', 'NC', 'MS', 'KY'],
                   'PJM': ['PA', 'NJ', 'DE', 'MD', 'VA', 'WV', 'OH', 'KY', 'MI', 'IL', 'NC', 'IN'],
+                  'ATSI': ['OH', 'PA'],
+                  'DEOK': ['OH', 'KY'],
+                  'EKPC': ['KY', 'IN'],
                   'ISNE': ['ME', 'NH', 'VT', 'MA', 'RI', 'CT'],
                   'NYIS': ['NY']}
         #compile the different months of CEMS files into one dataframe, df_cems. 
