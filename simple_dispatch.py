@@ -216,8 +216,6 @@ class generatorData(object):
         ##unit-level data: prime mover type, fuel type, heat input, NOx, SO2, CO2, and hours online
         df = self.egrid_unt.copy(deep=True)
         #rename columns
-        # NOTE: 2005, UNITID = BLRID, no PRMVR, FUELU1 = FUELB1, HTIAN = [HTIEAN, HTIFAN]?, NOXAN = [NOXEAN NOXFAN]?, SO2AN = [SO2EAN,SO2FAN]?, CO2 = [CO2EAN,CO2FAN]?, HRSOP = LOADHRS
-        df = df[['PNAME', 'ORISPL', 'UNITID', 'PRMVR', 'FUELU1', 'HTIAN', 'NOXAN', 'SO2AN', 'CO2AN', 'HRSOP']]
         df.columns = ['gen', 'orispl', 'unit', 'prime_mover', 'fuel', 'mmbtu_ann', 'nox_ann', 'so2_ann', 'co2_ann', 'hours_on']
         df['orispl_unit'] = df.orispl.map(str) + '_' + df.unit.map(str) #orispl_unit is a unique tag for each generator unit
         #drop nan fuel
@@ -240,7 +238,6 @@ class generatorData(object):
         df_plnt_fuel.PLFUELCT = df_plnt_fuel.PLFUELCT.str.lower()
         df_plnt_fuel.columns = ['fuel', 'fuel_type']
         # grab all geography
-        # NOTE: 2005, no BACODE (balancing authority code)
         df_plnt = df_plnt[['ORISPL', 'PSTATABB', 'BACODE', 'NERC', 'SUBRGN']]
         df_plnt.columns = ['orispl', 'state', 'ba', 'nerc', 'egrid']
        
@@ -254,14 +251,14 @@ class generatorData(object):
         else:
             df = df[df.ba == self.ba_code]
         
-        ## calculate the emissions rates # NOTE: double check that eGRID units in tons
+        ## calculate the emissions rates
         with numpy.errstate(divide='ignore'):
             df['co2'] = numpy.divide(df.co2_ann,df.mwh_ann) * 907.185 #tons to kg # replaced scipy with numpy divide
             df['so2'] = numpy.divide(df.so2_ann,df.mwh_ann) * 907.185 #tons to kg
             df['nox'] = numpy.divide(df.nox_ann,df.mwh_ann) * 907.185 #tons to kg
         
         ## analyze empty years
-        #for empty year online, look at orispl in egrid_gen instead of egrid_unit # NOTE: all year_online is from eGRID_gen?? May need to re-run with eGRID_unt
+        #for empty year online, look at orispl in egrid_gen instead of egrid_unit
         df.loc[df.year_online.isna(), 'year_online'] = (df[df.year_online.isna()][['orispl', 'prime_mover', 'fuel']] # retrieve nan year online
                                                         .merge(df_gen_long[['orispl', 'prime_mover', 'fuel', 'year_online']]
                                                                .groupby(['orispl', 'prime_mover', 'fuel'], as_index=False)
@@ -294,6 +291,7 @@ class generatorData(object):
                   'ATSI': ['OH', 'PA'],
                   'DEOK': ['OH', 'KY'],
                   'EKPC': ['KY', 'IN'],
+                  'OVEC': ['OH'],
                   'ISNE': ['ME', 'NH', 'VT', 'MA', 'RI', 'CT'],
                   'NYIS': ['NY']}
         #compile the different months of CEMS files into one dataframe, df_cems. 
@@ -353,7 +351,7 @@ class generatorData(object):
         #drop any bogus data. For example, the smallest mmbtu we would expect to see is 
         #25MW(smallest unit) * 0.4(smallest minimum output) * 6.0 (smallest heat rate) = 60 mmbtu. 
         #Any entries with less than 60 mmbtu fuel or less than 6.0 heat rate, let's get rid of that row of data.
-        df_cems = df_cems[(df_cems.heat_rate >= 6.0) & (df_cems.mmbtu >= 60)] # NOTE: double check assumption above
+        df_cems = df_cems[(df_cems.heat_rate >= 6.0) & (df_cems.mmbtu >= 60)]
         
         ##calculate emissions rates and heat rate for each week and each generator
         #rather than parsing the dates (which takes forever because this is such a big dataframe) we can create month and day columns for slicing the 
@@ -494,8 +492,7 @@ class generatorData(object):
         df_fuel.prime_mover = df_fuel.prime_mover.str.lower()
         df_orispl_unit = df_orispl_unit.merge(df_fuel, on='orispl_unit', how='left')
         #if we are using, for example, 2017 CEMS and 2016 eGrid, there may be some powerplants without fuel, fuel_type, prime_mover, and year_online data. 
-        #Let's assume 'ng', 'gas', 'ct', and 2017 for these units based on trends on what was built in 2017; 
-        # NOTE: NEED TO CHANGE THESE FOR EACH YEAR
+        #Let's assume 'ng', 'gas', 'ct', and 2017 for these units based on trends on what was built in 2017; this needs to be changed given the assumptions of the model
         df_orispl_unit.loc[df_orispl_unit.fuel.isna(), ['fuel', 'fuel_type']] = ['ng', 'gas']
         df_orispl_unit.loc[df_orispl_unit.prime_mover.isna(), 'prime_mover'] = 'ct'
         df_orispl_unit.loc[df_orispl_unit.year_online.isna(), 'year_online'] = self.year
@@ -512,31 +509,33 @@ class generatorData(object):
         #calculate the elec_ratio that is used for CHP derating
         chp_derate_df = self.eia923_1.copy(deep=True) # copy entire EIA generator dataframe
         chp_derate_df = chp_derate_df[(chp_derate_df.orispl.isin(df_orispl_unit.orispl)) & (chp_derate_df['Combined Heat And\nPower Plant']=='Y')].replace('.', 0.0) # grabs plants classified as CHP that are also in CEMS
-        chp_derate_df = (chp_derate_df[['orispl', 'Reported\nFuel Type Code', 'Elec_Quantity\nJanuary', 'Elec_Quantity\nFebruary', 'Elec_Quantity\nMarch', 
-                                       'Elec_Quantity\nApril', 'Elec_Quantity\nMay', 'Elec_Quantity\nJune', 'Elec_Quantity\nJuly', 'Elec_Quantity\nAugust', 
-                                       'Elec_Quantity\nSeptember', 'Elec_Quantity\nOctober', 'Elec_Quantity\nNovember', 'Elec_Quantity\nDecember', 
-                                       'Quantity\nJanuary', 'Quantity\nFebruary', 'Quantity\nMarch', 'Quantity\nApril', 'Quantity\nMay', 'Quantity\nJune', 
-                                       'Quantity\nJuly', 'Quantity\nAugust', 'Quantity\nSeptember', 'Quantity\nOctober', 'Quantity\nNovember', 'Quantity\nDecember']]
-                         .groupby(['orispl', 'Reported\nFuel Type Code'], as_index=False).agg('sum')) # sums electricity consumption (elec quantity) and electricity and heat consumption (quantity) for each fuel type of each ORISPL
-        chp_derate_df['elec_ratio'] = (chp_derate_df[['Elec_Quantity\nJanuary', 'Elec_Quantity\nFebruary', 'Elec_Quantity\nMarch', 'Elec_Quantity\nApril', 
-                                                      'Elec_Quantity\nMay', 'Elec_Quantity\nJune', 'Elec_Quantity\nJuly', 'Elec_Quantity\nAugust', 
-                                                      'Elec_Quantity\nSeptember', 'Elec_Quantity\nOctober', 'Elec_Quantity\nNovember', 'Elec_Quantity\nDecember']]
-                                       .sum(axis=1) / chp_derate_df[['Quantity\nJanuary', 'Quantity\nFebruary', 'Quantity\nMarch', 'Quantity\nApril', 'Quantity\nMay',
-                                                                     'Quantity\nJune', 'Quantity\nJuly', 'Quantity\nAugust', 'Quantity\nSeptember', 'Quantity\nOctober',
-                                                                     'Quantity\nNovember', 'Quantity\nDecember']].sum(axis=1)) # elec ratio is electricity generated/(electricity and heat generated)
-        chp_derate_df = chp_derate_df[['orispl', 'Reported\nFuel Type Code', 'elec_ratio']].dropna() # removes all columns but fuel type and ratio for each ORISPL
-        chp_derate_df.columns = ['orispl', 'fuel', 'elec_ratio']    
-        chp_derate_df.fuel = chp_derate_df.fuel.str.lower()
-        mw_cols = ['mw','mw1','mw2','mw3','mw4','mw5','mw6','mw7','mw8','mw9','mw10','mw11','mw12','mw13','mw14','mw15','mw16','mw17','mw18','mw19','mw20','mw21',
-                   'mw22','mw23','mw24','mw25','mw26','mw27','mw28','mw29','mw30','mw31','mw32','mw33','mw34','mw35','mw36','mw37','mw38','mw39','mw40','mw41','mw42',
-                   'mw43','mw44','mw45','mw46','mw47','mw48','mw49','mw50', 'mw51', 'mw52']
-        chp_derate_df = df_orispl_unit.merge(chp_derate_df, how='right', on=['orispl', 'fuel'])[mw_cols + ['orispl', 'fuel', 'elec_ratio', 'orispl_unit']] # links each relevant ORISPL unit, along with its max capaciy for each week, to the derated CHP columns just created
-        chp_derate_df[mw_cols] = chp_derate_df[mw_cols].multiply(chp_derate_df.elec_ratio, axis='index') # multiplies each unit's electricity max generation capacity for each week with the calculated electricity ratio
-        chp_derate_df.dropna(inplace=True) # remove nans
-        #merge updated mw columns back into df_orispl_unit
-        #update the chp_derate_df index to match df_orispl_unit
-        chp_derate_df.index = df_orispl_unit[df_orispl_unit.orispl_unit.isin(chp_derate_df.orispl_unit)].index       
-        df_orispl_unit.update(chp_derate_df[mw_cols]) # update relevant MW columns to reflect heat generation
+        # only proceeds if dataframe is not empty
+        if len(chp_derate_df) != 0:
+            chp_derate_df = (chp_derate_df[['orispl', 'Reported\nFuel Type Code', 'Elec_Quantity\nJanuary', 'Elec_Quantity\nFebruary', 'Elec_Quantity\nMarch', 
+                                           'Elec_Quantity\nApril', 'Elec_Quantity\nMay', 'Elec_Quantity\nJune', 'Elec_Quantity\nJuly', 'Elec_Quantity\nAugust', 
+                                           'Elec_Quantity\nSeptember', 'Elec_Quantity\nOctober', 'Elec_Quantity\nNovember', 'Elec_Quantity\nDecember', 
+                                           'Quantity\nJanuary', 'Quantity\nFebruary', 'Quantity\nMarch', 'Quantity\nApril', 'Quantity\nMay', 'Quantity\nJune', 
+                                           'Quantity\nJuly', 'Quantity\nAugust', 'Quantity\nSeptember', 'Quantity\nOctober', 'Quantity\nNovember', 'Quantity\nDecember']]
+                             .groupby(['orispl', 'Reported\nFuel Type Code'], as_index=False).agg('sum')) # sums electricity consumption (elec quantity) and electricity and heat consumption (quantity) for each fuel type of each ORISPL
+            chp_derate_df['elec_ratio'] = (chp_derate_df[['Elec_Quantity\nJanuary', 'Elec_Quantity\nFebruary', 'Elec_Quantity\nMarch', 'Elec_Quantity\nApril', 
+                                                          'Elec_Quantity\nMay', 'Elec_Quantity\nJune', 'Elec_Quantity\nJuly', 'Elec_Quantity\nAugust', 
+                                                          'Elec_Quantity\nSeptember', 'Elec_Quantity\nOctober', 'Elec_Quantity\nNovember', 'Elec_Quantity\nDecember']]
+                                           .sum(axis=1) / chp_derate_df[['Quantity\nJanuary', 'Quantity\nFebruary', 'Quantity\nMarch', 'Quantity\nApril', 'Quantity\nMay',
+                                                                         'Quantity\nJune', 'Quantity\nJuly', 'Quantity\nAugust', 'Quantity\nSeptember', 'Quantity\nOctober',
+                                                                         'Quantity\nNovember', 'Quantity\nDecember']].sum(axis=1)) # elec ratio is electricity generated/(electricity and heat generated)
+            chp_derate_df = chp_derate_df[['orispl', 'Reported\nFuel Type Code', 'elec_ratio']].dropna() # removes all columns but fuel type and ratio for each ORISPL
+            chp_derate_df.columns = ['orispl', 'fuel', 'elec_ratio']    
+            chp_derate_df.fuel = chp_derate_df.fuel.str.lower()
+            mw_cols = ['mw','mw1','mw2','mw3','mw4','mw5','mw6','mw7','mw8','mw9','mw10','mw11','mw12','mw13','mw14','mw15','mw16','mw17','mw18','mw19','mw20','mw21',
+                       'mw22','mw23','mw24','mw25','mw26','mw27','mw28','mw29','mw30','mw31','mw32','mw33','mw34','mw35','mw36','mw37','mw38','mw39','mw40','mw41','mw42',
+                       'mw43','mw44','mw45','mw46','mw47','mw48','mw49','mw50', 'mw51', 'mw52']
+            chp_derate_df = df_orispl_unit.merge(chp_derate_df, how='right', on=['orispl', 'fuel'])[mw_cols + ['orispl', 'fuel', 'elec_ratio', 'orispl_unit']] # links each relevant ORISPL unit, along with its max capaciy for each week, to the derated CHP columns just created
+            chp_derate_df[mw_cols] = chp_derate_df[mw_cols].multiply(chp_derate_df.elec_ratio, axis='index') # multiplies each unit's electricity max generation capacity for each week with the calculated electricity ratio
+            chp_derate_df.dropna(inplace=True) # remove nans
+            #merge updated mw columns back into df_orispl_unit
+            #update the chp_derate_df index to match df_orispl_unit
+            chp_derate_df.index = df_orispl_unit[df_orispl_unit.orispl_unit.isin(chp_derate_df.orispl_unit)].index       
+            df_orispl_unit.update(chp_derate_df[mw_cols]) # update relevant MW columns to reflect heat generation
         #replace the global dataframes
         self.df_cems = df_cems # saves large CEMS dataset for entire region
         self.df = df_orispl_unit # emissions, max capacity, and heat rate of unique units over each week of the year (along with their fuel types, etc.)
@@ -610,7 +609,7 @@ class generatorData(object):
             orispl_prices_nan = orispl_prices[(orispl_prices.fuel==f) & (orispl_prices['quantity'].isna())] #plants with no EIA923 data
             multiplier = 1.00
             
-            #if lignite, use the national fuel-quantity-weighted median # NOTE: make print statement for how much this is of total generation
+            #if lignite, use the national fuel-quantity-weighted median 
             if f == 'lig':
                 #grab the 5th - 95th percentile prices
                 temp = df[(df.fuel==f) & (df.fuel_price.notna())][['month', 'quantity', 'fuel_price', 'purchase_type']]
@@ -1030,7 +1029,7 @@ class generatorData(object):
         
     def addGenVom(self):
         """ 
-        Adds vom costs to the generator dataframe 'self.df' NOTE: weird how they don't use FERC for price changes; therefore, it needs to to be updated each year?
+        Adds vom costs to the generator dataframe 'self.df' 
         ---
         """
         df = self.df.copy(deep=True)
@@ -1102,7 +1101,7 @@ class generatorData(object):
         df.loc[df.fuel_type.isna(), 'fuel_type'] = scipy.array(df[df.fuel_type.isna()].merge(merge_orispl, how='left', on=['orispl']).fuel_type_y) # do same for fuel types
         #build the hist_dispatch dataframe
         #start with the datetime column # NOTE: can probably replace this column by just doing hourly increments between first and last times. The last week will just go on an extra few hours? (repeat midnight hours?)
-        start_date_str = (self.df_cems.date.min()[-4:] + '-' + self.df_cems.date.min()[:5] + ' 00:00') # NOTE: change this to get the actual first datetime (because we operate on UTC - should we just translate to local time?)
+        start_date_str = (self.df_cems.date.min()[-4:] + '-' + self.df_cems.date.min()[:5] + ' 00:00') 
         date_hour_count = len(self.df_cems.date.unique())*24#+1 # amount of hours in year
         hist_dispatch = pandas.DataFrame(scipy.array([pandas.Timestamp(start_date_str) + datetime.timedelta(hours=i) for i in range(date_hour_count)]), columns=['datetime']) # builds time data for each hour of year 
         #add columns by aggregating df by date + hour
@@ -1142,7 +1141,7 @@ class generatorData(object):
         df_bas = df[df.respondent_id.isin(df_ids_bas) & (df.report_yr==year)][
             ['lambda_date', 'respondent_id', 'hour01', 'hour02', 'hour03', 'hour04', 'hour05', 'hour06', 'hour07', 
              'hour08', 'hour09', 'hour10', 'hour11', 'hour12', 'hour13', 'hour14', 'hour15', 'hour16', 'hour17', 'hour18', 
-             'hour19', 'hour20', 'hour21', 'hour22', 'hour23', 'hour24']] # retrieves historical 24-hour prices for each day for the respondent authorities # NOTE: need to change time frame to make this align
+             'hour19', 'hour20', 'hour21', 'hour22', 'hour23', 'hour24']] # retrieves historical 24-hour prices for each day for the respondent authorities 
         df_bas.drop(['respondent_id'], axis=1, inplace=True)
         df_bas.columns = ['date',1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24]
         df_bas_temp = pandas.melt(df_bas, id_vars=['date']) # makes each row-column price data point its own row; date and hour are reported alongside the price data in the row
@@ -1596,7 +1595,7 @@ class bidStack(object):
             # FOR DEBUGGING: tempDF = df.loc[:][["f",  "s", "min_out", "a", "full_gen_cost_tot_base", "full_gen_cost_tot_marg"]]
             #emissions
             for e in ['co2', 'so2', 'nox']:
-                # base emissions here is not meant to match base calculations when not including min_output, NOTE: not sure where this equation comes from
+                # base emissions here is not meant to match base calculations when not including min_output
                 df['full_' + e + '_base'] = (0.1*df.a.apply(self.returnTotalEmissions, args=(e,)) + 
                                              0.9*df.s.apply(self.returnTotalEmissions, args=(e,)) + df.s.apply(self.returnMarginalGenerator, args=(e,)) 
                                              * df.s.apply(self.returnMarginalGenerator, args=('min_out',))) #calculate the base emissions [kg]
@@ -2022,7 +2021,7 @@ class bidStack(object):
                 for p_key in c[c_key].keys():
                     bs_df_fuel_color.loc[(bs_df_fuel_color.fuel == c_key) & (bs_df_fuel_color.prime_mover == p_key), 'fuel_color'] = c[c_key][p_key]
             
-            #color for any generators without a fuel_color entry; NOTE: can probably remove?
+            #color for any generators without a fuel_color entry
             empty_color = '#dd1c77'
             color_2 = bs_df_fuel_color.fuel_color.replace('', empty_color)
         else:
@@ -2038,7 +2037,7 @@ class bidStack(object):
             for c_key in c.keys():
                 bs_df_fuel_color.loc[(bs_df_fuel_color.fuel_type == c_key), 'fuel_color'] = c[c_key]
             
-            #color for any generators without a fuel_color entry; NOTE: can probably remove?
+            #color for any generators without a fuel_color entry
             empty_color = '#dd1c77'
             color_2 = bs_df_fuel_color.fuel_color.replace('', empty_color)
             

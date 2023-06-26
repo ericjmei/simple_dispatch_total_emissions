@@ -85,9 +85,9 @@ def fill_column(PCAID, state):
                        189: "AEC", # powersouth energy cooperative
                        ## PJM balancing authorities
                        14725:"PJM",
-                       32208:"ATSI", # american transmission systems inc/firstenergy corp
-                       3542:"DEOK", # duke energy ohio kentucky; NEEDS TO BE FILTERED FOR OH and KY
-                       5580:"EKPC", # east kentucky power cooperative
+                       32208:"PJM", # american transmission systems inc/firstenergy corp
+                       3542:"PJM", # duke energy ohio kentucky; NEEDS TO BE FILTERED FOR OH and KY
+                       5580:"PJM", # east kentucky power cooperative
                        14015: "OVEC", # ohio valley electric corporation
                        13501:"NYIS"}
     if PCAID in PCAID_to_BACODE:

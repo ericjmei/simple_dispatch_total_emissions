@@ -18,10 +18,10 @@ import warnings
 
 ##inputs
 input_folder_rel_path = "../Data/Simple Dispatch Inputs" # where to access input data relative to code folder
-output_folder_actual_gd_rel_path = "../Data/Simple Dispatch Outputs/2023-04-18 act ba regions/Generator Data"
-output_folder_rel_path = "../Data/Simple Dispatch Outputs/Fuel Price Metrics/6. ba regions"
+output_folder_actual_gd_rel_path = "../Data/Simple Dispatch Outputs/2023-06-23 act/Generator Data Old"
+output_folder_rel_path = "../Data/Simple Dispatch Outputs/Fuel Price Metrics/7. ba regions edited"
 CPI_path = 'CPI-U_for_inflation.csv' # consumer price index data
-region_all = ['SOCO', 'ISNE', 'PJM', 'NYIS']
+region_all = ['SOCO', 'TVA', 'AEC', 'ISNE', 'PJM', 'NYIS', 'SE']
 years = range(2006, 2020)
 
 ## import consumer price index
