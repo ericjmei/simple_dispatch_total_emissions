@@ -26,7 +26,7 @@ if __name__ == '__main__':
     ### inputs
     run_years = range(2006, 2020) # specify run years
     
-    region = 'ISNE'
+    region = 'SOCO'
     is_counterfactual = True # NOTE: if only doing natural gas counterfactual, this needs to be set to false and fn_beginning_gd_short = 'counterfactual_'
     rel_path_input_generators_old = "../Data/Simple Dispatch Outputs/2023-06-23 cf/Generator Data Old"
     rel_path_input_generators_new = "../Data/Simple Dispatch Outputs/2023-06-23 cf/Generator Data"
